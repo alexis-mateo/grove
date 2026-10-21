@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+grove-core = { path = "crates/grove-core" }
+grove-term = { path = "crates/grove-term" }
+grove-git = { path = "crates/grove-git" }
+grove-claude = { path = "crates/grove-claude" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+log = "0.4"
+env_logger = "0.11"
+tempfile = "3"
+
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+gpui = "0.2.2"
+gix = { version = "0.89", default-features = false, features = ["sha1"] }
+notify = "8"
+notify-rust = "4"
+
+# Le rendu du terminal (notre code) est trop lent sans optimisation.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# xattr 0.2.3 (via gpui_http_client) ne compile plus avec libc récent.
+[patch.crates-io]
+xattr = { path = "patches/xattr" }

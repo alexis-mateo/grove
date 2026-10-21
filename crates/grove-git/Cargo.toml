@@ -1,0 +1,14 @@
+[package]
+name = "grove-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gix.workspace = true
+log.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

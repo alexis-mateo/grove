@@ -1,0 +1,521 @@
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use anyhow::Result;
+use gpui::{
+    App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla,
+    KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    Task, TextRun, UnderlineStyle, Window, canvas, div, fill, font, point, prelude::*, px, size,
+};
+use grove_core::Config;
+use grove_term::{
+    CellFlags, CursorShape, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
+    TerminalOptions,
+};
+
+use crate::mouse::{self, Action};
+use crate::{builtin_glyphs, fonts, keys};
+
+/// Hauteur de ligne relative à la taille de police.
+const LINE_HEIGHT: f32 = 1.3;
+
+pub struct TerminalView {
+    terminal: Arc<Terminal>,
+    focus_handle: FocusHandle,
+    font: Font,
+    font_size: Pixels,
+    title: Option<String>,
+    exited: Option<Option<i32>>,
+    /// Défilement en pixels pas encore converti en lignes.
+    pending_scroll: f32,
+    /// Géométrie de la grille au dernier rendu : conversion pixels → cellules.
+    layout: Rc<Cell<GridLayout>>,
+    /// Dernière cellule signalée en mouvement, pour ne pas répéter le même report.
+    last_motion: Option<(usize, usize)>,
+    _events: Task<()>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct GridLayout {
+    origin: Point<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+    columns: usize,
+    lines: usize,
+}
+
+/// Émis quand le processus du terminal s'est terminé.
+pub struct Exited;
+
+impl gpui::EventEmitter<Exited> for TerminalView {}
+
+impl TerminalView {
+    /// Lance le programme décrit par `options` et crée la vue. Échoue si le PTY ne peut pas être créé.
+    pub fn spawn(options: TerminalOptions, config: &Config, cx: &mut App) -> Result<Entity<Self>> {
+        let (tx, rx) = smol::channel::unbounded();
+        let terminal = Terminal::spawn(options, move |event| {
+            let _ = tx.try_send(event);
+        })?;
+        Ok(cx.new(|cx| Self::new(terminal, rx, config, cx)))
+    }
+
+    fn new(
+        terminal: Terminal,
+        rx: smol::channel::Receiver<TerminalEvent>,
+        config: &Config,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let events = cx.spawn(async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                // Regroupe les événements arrivés entre-temps en un seul rafraîchissement.
+                let mut batch = vec![event];
+                while let Ok(event) = rx.try_recv() {
+                    batch.push(event);
+                }
+                let updated = this.update(cx, |this, cx| {
+                    for event in batch {
+                        this.handle_event(event, cx);
+                    }
+                    cx.notify();
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Self {
+            terminal: Arc::new(terminal),
+            focus_handle: cx.focus_handle(),
+            font: font(fonts::resolve_family(&config.font.family)),
+            font_size: px(config.font.size),
+            title: None,
+            exited: None,
+            pending_scroll: 0.0,
+            layout: Rc::new(Cell::new(GridLayout {
+                line_height: px(config.font.size * LINE_HEIGHT),
+                ..Default::default()
+            })),
+            last_motion: None,
+            _events: events,
+        }
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    fn handle_event(&mut self, event: TerminalEvent, cx: &mut Context<Self>) {
+        match event {
+            TerminalEvent::Wakeup | TerminalEvent::Bell => {}
+            TerminalEvent::Title(title) => self.title = title,
+            TerminalEvent::Exited(code) => {
+                self.exited = Some(code);
+                cx.emit(Exited);
+            }
+        }
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let m = &keystroke.modifiers;
+
+        if m.control && m.shift && keystroke.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                self.terminal.scroll_to_bottom();
+                self.terminal.paste(&text);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if m.shift && !m.control && (keystroke.key == "pageup" || keystroke.key == "pagedown") {
+            let page = self.terminal.snapshot().lines as i32;
+            self.terminal.scroll(if keystroke.key == "pageup" { page } else { -page });
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
+        let app_cursor = self.terminal.mode().contains(TermMode::APP_CURSOR);
+        if let Some(bytes) = keys::to_esc(keystroke, app_cursor) {
+            self.terminal.scroll_to_bottom();
+            self.terminal.write(bytes);
+            cx.stop_propagation();
+        }
+    }
+
+    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let lines = match event.delta {
+            ScrollDelta::Lines(delta) => delta.y,
+            ScrollDelta::Pixels(delta) => delta.y / self.layout.get().line_height,
+        };
+        self.pending_scroll += lines;
+        let whole = self.pending_scroll.trunc();
+        if whole == 0.0 {
+            return;
+        }
+        self.pending_scroll -= whole;
+
+        let mode = self.terminal.mode();
+        let count = whole.abs() as usize;
+        if self.reports_mouse(&event.modifiers) {
+            // Le programme gère la souris (Claude Code, vim, htop…) : on lui envoie la molette.
+            let code = if whole > 0.0 { mouse::WHEEL_UP } else { mouse::WHEEL_DOWN };
+            let (column, row) = self.cell_at(event.position);
+            if let Some(bytes) = mouse::encode(code, Action::Press, column, row, &event.modifiers, mode) {
+                self.terminal.write(bytes.repeat(count));
+            }
+        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) && !event.modifiers.shift {
+            // Écran alternatif sans souris : pas de scrollback, on envoie des flèches (comme xterm).
+            let arrow: &[u8] = match (whole > 0.0, mode.contains(TermMode::APP_CURSOR)) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            self.terminal.write(arrow.repeat(count));
+        } else {
+            self.terminal.scroll(whole as i32);
+            cx.notify();
+        }
+    }
+
+    /// Le programme a demandé les événements souris. Shift les garde pour Grove.
+    fn reports_mouse(&self, modifiers: &Modifiers) -> bool {
+        self.terminal.mode().intersects(TermMode::MOUSE_MODE) && !modifiers.shift
+    }
+
+    /// Cellule sous `position`, bornée à la grille.
+    fn cell_at(&self, position: Point<Pixels>) -> (usize, usize) {
+        let layout = self.layout.get();
+        let offset = position - layout.origin;
+        let column = (offset.x / layout.cell_width).max(0.0) as usize;
+        let row = (offset.y / layout.line_height).max(0.0) as usize;
+        (column.min(layout.columns.saturating_sub(1)), row.min(layout.lines.saturating_sub(1)))
+    }
+
+    fn report_button(&mut self, button: MouseButton, action: Action, position: Point<Pixels>, modifiers: &Modifiers) {
+        let Some(code) = mouse::button_code(button) else { return };
+        let (column, row) = self.cell_at(position);
+        if let Some(bytes) = mouse::encode(code, action, column, row, modifiers, self.terminal.mode()) {
+            self.terminal.write(bytes);
+        }
+    }
+
+    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle);
+        if self.reports_mouse(&event.modifiers) {
+            self.report_button(event.button, Action::Press, event.position, &event.modifiers);
+            cx.stop_propagation();
+        }
+    }
+
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.reports_mouse(&event.modifiers) {
+            self.report_button(event.button, Action::Release, event.position, &event.modifiers);
+            cx.stop_propagation();
+        }
+    }
+
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, _: &mut Context<Self>) {
+        let mode = self.terminal.mode();
+        if !self.reports_mouse(&event.modifiers) {
+            return;
+        }
+        // 1002 : mouvements bouton enfoncé ; 1003 : tous les mouvements.
+        let code = match event.pressed_button.and_then(mouse::button_code) {
+            Some(code) if mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) => code,
+            None if mode.contains(TermMode::MOUSE_MOTION) => mouse::NO_BUTTON,
+            _ => return,
+        };
+        let cell = self.cell_at(event.position);
+        if self.last_motion == Some(cell) {
+            return;
+        }
+        self.last_motion = Some(cell);
+        if let Some(bytes) =
+            mouse::encode(code + mouse::MOTION, Action::Press, cell.0, cell.1, &event.modifiers, mode)
+        {
+            self.terminal.write(bytes);
+        }
+    }
+}
+
+impl Focusable for TerminalView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for TerminalView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let terminal = self.terminal.clone();
+        let font = self.font.clone();
+        let font_size = self.font_size;
+        let focused = self.focus_handle.is_focused(window);
+        let background = to_hsla(terminal.palette().background);
+
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&font);
+        let cell_width = text_system
+            .advance(font_id, font_size, 'm')
+            .map(|s| s.width)
+            .unwrap_or(font_size * 0.6);
+        let line_height = (font_size * LINE_HEIGHT).round();
+        let layout = self.layout.clone();
+        let metrics = Metrics { cell_width, line_height, font_size };
+
+        let exited = self.exited.map(|code| match code {
+            Some(code) => format!("[processus terminé, code {code}]"),
+            None => "[processus terminé]".to_owned(),
+        });
+
+        div()
+            .id("terminal")
+            .key_context("Terminal")
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .size_full()
+            .bg(background)
+            .p_1()
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        let columns = (bounds.size.width / metrics.cell_width).floor().max(1.0);
+                        let lines = (bounds.size.height / metrics.line_height).floor().max(1.0);
+                        layout.set(GridLayout {
+                            origin: bounds.origin,
+                            cell_width: metrics.cell_width,
+                            line_height: metrics.line_height,
+                            columns: columns as usize,
+                            lines: lines as usize,
+                        });
+                        terminal.resize(
+                            columns as u16,
+                            lines as u16,
+                            f32::from(metrics.cell_width) as u16,
+                            f32::from(metrics.line_height) as u16,
+                        );
+                        terminal.snapshot()
+                    },
+                    move |bounds, snapshot, window, cx| {
+                        paint_grid(bounds, &snapshot, &metrics, &font, focused, window, cx);
+                    },
+                )
+                .size_full(),
+            )
+            .children(exited.map(|text| {
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .right_3()
+                    .text_color(Hsla::from(Rgba { r: 0.6, g: 0.65, b: 0.6, a: 1.0 }))
+                    .child(SharedString::from(text))
+            }))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Metrics {
+    cell_width: Pixels,
+    line_height: Pixels,
+    font_size: Pixels,
+}
+
+fn paint_grid(
+    bounds: Bounds<Pixels>,
+    snapshot: &Snapshot,
+    metrics: &Metrics,
+    font: &Font,
+    focused: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let origin = bounds.origin;
+    let cell_origin = |row: usize, column: usize| {
+        point(
+            origin.x + metrics.cell_width * column as f32,
+            origin.y + metrics.line_height * row as f32,
+        )
+    };
+    let cell_bounds = |row: usize, column: usize, width: usize| {
+        Bounds::new(
+            cell_origin(row, column),
+            size(metrics.cell_width * width as f32, metrics.line_height),
+        )
+    };
+
+    // Cellules, avec le curseur plein dessiné en inversant les couleurs.
+    let block_cursor = focused && snapshot.cursor_shape == CursorShape::Block;
+    let mut cells: Vec<RenderCell> = snapshot.cells.clone();
+    if let (true, Some((row, column))) = (block_cursor, snapshot.cursor) {
+        if let Some(cell) = cells.iter_mut().find(|c| c.row == row && c.column == column) {
+            cell.fg = cell.bg;
+            cell.bg = snapshot.cursor_color;
+        }
+    }
+    const SELECTION: Rgb = Rgb { r: 0x3a, g: 0x4d, b: 0x44 };
+    for cell in cells.iter_mut().filter(|c| c.selected) {
+        cell.bg = SELECTION;
+    }
+
+    // 1. Fonds : on fusionne les cellules voisines de même couleur.
+    for row in cells.chunk_by(|a, b| a.row == b.row) {
+        for run in row.chunk_by(|a, b| a.bg == b.bg && b.column == a.column + width(a)) {
+            let first = &run[0];
+            if first.bg == snapshot.background {
+                continue;
+            }
+            let columns = run.iter().map(width).sum();
+            window.paint_quad(fill(cell_bounds(first.row, first.column, columns), to_hsla(first.bg)));
+        }
+    }
+
+    // 2. Blocs et traits dessinés en rectangles, retirés du texte.
+    let stroke = (f32::from(metrics.font_size) / 14.0).round().max(1.0);
+    for cell in cells.iter_mut() {
+        let Some(glyph) = builtin_glyphs::glyph(
+            cell.c,
+            f32::from(metrics.cell_width) * width(cell) as f32,
+            f32::from(metrics.line_height),
+            stroke,
+        ) else {
+            continue;
+        };
+        let origin = cell_origin(cell.row, cell.column);
+        let color = Hsla { a: glyph.alpha, ..to_hsla(cell.fg) };
+        for r in glyph.rects {
+            window.paint_quad(fill(
+                Bounds::new(point(origin.x + px(r.x), origin.y + px(r.y)), size(px(r.w), px(r.h))),
+                color,
+            ));
+        }
+        cell.c = ' ';
+    }
+
+    // 3. Texte : un lot par suite de cellules de même style. Les caractères larges
+    // et les cellules avec caractères combinants forment leur propre lot pour
+    // que l'alignement sur la grille (`force_width`) reste juste.
+    let same_batch = |a: &RenderCell, b: &RenderCell| {
+        a.fg == b.fg
+            && style_flags(a.flags) == style_flags(b.flags)
+            && b.column == a.column + 1
+            && !a.flags.contains(CellFlags::WIDE_CHAR)
+            && !b.flags.contains(CellFlags::WIDE_CHAR)
+            && a.zerowidth.is_none()
+            && b.zerowidth.is_none()
+    };
+    for row in cells.chunk_by(|a, b| a.row == b.row) {
+        for batch in row.chunk_by(same_batch) {
+            let first = &batch[0];
+            let decorated = first.flags.intersects(CellFlags::ALL_UNDERLINES | CellFlags::STRIKEOUT);
+            if !decorated && batch.iter().all(|c| c.c == ' ' || c.c == '\0') {
+                continue;
+            }
+            let mut text = String::with_capacity(batch.len());
+            for cell in batch {
+                text.push(if cell.c == '\0' { ' ' } else { cell.c });
+                if let Some(zerowidth) = &cell.zerowidth {
+                    text.push_str(zerowidth);
+                }
+            }
+            let color = to_hsla(first.fg);
+            let run = TextRun {
+                len: text.len(),
+                font: Font {
+                    weight: if first.flags.contains(CellFlags::BOLD) {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    },
+                    style: if first.flags.contains(CellFlags::ITALIC) {
+                        FontStyle::Italic
+                    } else {
+                        FontStyle::Normal
+                    },
+                    ..font.clone()
+                },
+                color,
+                background_color: None,
+                underline: first.flags.intersects(CellFlags::ALL_UNDERLINES).then_some(
+                    UnderlineStyle {
+                        thickness: px(1.0),
+                        color: Some(color),
+                        wavy: first.flags.contains(CellFlags::UNDERCURL),
+                    },
+                ),
+                strikethrough: first
+                    .flags
+                    .contains(CellFlags::STRIKEOUT)
+                    .then_some(StrikethroughStyle { thickness: px(1.0), color: Some(color) }),
+            };
+            let force_width = (!first.flags.contains(CellFlags::WIDE_CHAR)).then_some(metrics.cell_width);
+            let line = window.text_system().shape_line(
+                text.into(),
+                metrics.font_size,
+                &[run],
+                force_width,
+            );
+            let _ = line.paint(cell_origin(first.row, first.column), metrics.line_height, window, cx);
+        }
+    }
+
+    // 4. Curseurs non pleins (barre, soulignement, bloc creux si la vue n'a pas le focus).
+    let Some((row, column)) = snapshot.cursor else {
+        return;
+    };
+    let color = to_hsla(snapshot.cursor_color);
+    let cell = cell_bounds(row, column, 1);
+    let thickness = px(2.0);
+    let shape = match snapshot.cursor_shape {
+        CursorShape::Block if !focused => CursorShape::HollowBlock,
+        shape => shape,
+    };
+    match shape {
+        CursorShape::Beam => {
+            window.paint_quad(fill(Bounds::new(cell.origin, size(thickness, cell.size.height)), color));
+        }
+        CursorShape::Underline => {
+            let y = cell.origin.y + cell.size.height - thickness;
+            window.paint_quad(fill(
+                Bounds::new(point(cell.origin.x, y), size(cell.size.width, thickness)),
+                color,
+            ));
+        }
+        CursorShape::HollowBlock => {
+            let px1 = px(1.0);
+            let (o, s) = (cell.origin, cell.size);
+            for edge in [
+                Bounds::new(o, size(s.width, px1)),
+                Bounds::new(point(o.x, o.y + s.height - px1), size(s.width, px1)),
+                Bounds::new(o, size(px1, s.height)),
+                Bounds::new(point(o.x + s.width - px1, o.y), size(px1, s.height)),
+            ] {
+                window.paint_quad(fill(edge, color));
+            }
+        }
+        CursorShape::Block | CursorShape::Hidden => {}
+    }
+}
+
+fn width(cell: &RenderCell) -> usize {
+    if cell.flags.contains(CellFlags::WIDE_CHAR) { 2 } else { 1 }
+}
+
+fn style_flags(flags: CellFlags) -> CellFlags {
+    flags & (CellFlags::BOLD | CellFlags::ITALIC | CellFlags::ALL_UNDERLINES | CellFlags::STRIKEOUT)
+}
+
+fn to_hsla(c: Rgb) -> Hsla {
+    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }.into()
+}

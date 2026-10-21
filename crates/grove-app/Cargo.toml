@@ -1,0 +1,27 @@
+[package]
+name = "grove-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "grove"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+gpui.workspace = true
+grove-core.workspace = true
+grove-term.workspace = true
+log.workspace = true
+grove-git.workspace = true
+grove-claude.workspace = true
+notify-rust.workspace = true
+jiff = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+smol = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
