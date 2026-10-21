@@ -26,6 +26,8 @@ pub struct CheckoutStatus {
     /// Fichiers modifiés, indexés ou non suivis.
     pub changed: u32,
     pub has_upstream: bool,
+    /// Le dépôt a au moins un remote : on peut synchroniser ou publier.
+    pub has_remote: bool,
 }
 
 pub(crate) fn git(workdir: &Path, args: &[&str]) -> Result<String> {
@@ -98,7 +100,51 @@ pub fn checkout_status(workdir: &Path) -> Result<CheckoutStatus> {
             status.changed += 1;
         }
     }
+    status.has_remote = !git(workdir, &["remote"])?.trim().is_empty();
     Ok(status)
+}
+
+/// Branche principale du dépôt : `main`, `master` ou `develop` en local, sinon
+/// sa version distante (`origin/main`…).
+pub fn default_branch(branches: &[Branch]) -> Option<&Branch> {
+    const NAMES: [&str; 3] = ["main", "master", "develop"];
+    let local = NAMES.iter().find_map(|name| branches.iter().find(|b| !b.remote && b.name == *name));
+    local.or_else(|| {
+        NAMES.iter().find_map(|name| {
+            branches.iter().find(|b| b.remote && b.name.split_once('/').is_some_and(|(_, n)| n == *name))
+        })
+    })
+}
+
+/// Synchronise la branche courante comme le bouton de VS Code : récupère le
+/// distant, avance en fast-forward si on est en retard, pousse si on est en
+/// avance. Une branche sans branche suivie est publiée (`push -u`).
+pub fn sync(workdir: &Path) -> Result<()> {
+    git(workdir, &["fetch", "--prune"])?;
+    let status = checkout_status(workdir)?;
+    if !status.has_upstream {
+        if git(workdir, &["symbolic-ref", "-q", "HEAD"]).is_err() {
+            bail!("HEAD détachée : rien à publier");
+        }
+        let remotes = git(workdir, &["remote"])?;
+        let remote = remotes.lines().find(|r| *r == "origin").or_else(|| remotes.lines().next());
+        let Some(remote) = remote else { bail!("aucun remote configuré") };
+        git(workdir, &["push", "-u", remote, "HEAD"])?;
+        return Ok(());
+    }
+    if status.behind > 0 {
+        git(workdir, &["pull", "--ff-only"]).map_err(|err| {
+            if err.to_string().contains("fast-forward") {
+                anyhow::anyhow!("la branche locale et la distante ont divergé : fusionne ou rebase dans un terminal")
+            } else {
+                err
+            }
+        })?;
+    }
+    if status.ahead > 0 {
+        git(workdir, &["push"])?;
+    }
+    Ok(())
 }
 
 /// Passe sur `branch`. Une branche distante (`origin/x`) crée la branche locale `x` qui la suit.
@@ -112,11 +158,13 @@ pub fn switch(workdir: &Path, branch: &Branch) -> Result<()> {
     Ok(())
 }
 
-/// Crée `name` à partir de `base` (HEAD si `None`) et passe dessus.
+/// Crée `name` à partir de `base` (HEAD si `None`) et passe dessus. La nouvelle
+/// branche ne suit pas `base` : partie de `origin/main`, elle se publiera sous
+/// son propre nom au lieu de pousser sur `main`.
 pub fn create(workdir: &Path, name: &str, base: Option<&str>) -> Result<()> {
     let name = name.trim();
     git(workdir, &["check-ref-format", "--branch", name]).map_err(|_| anyhow::anyhow!("nom de branche invalide : {name}"))?;
-    let mut args = vec!["switch", "-c", name];
+    let mut args = vec!["switch", "--no-track", "-c", name];
     args.extend(base);
     git(workdir, &args)?;
     Ok(())
@@ -198,5 +246,64 @@ mod tests {
         let branches = list_branches(clone.path()).unwrap();
         assert!(branches.iter().any(|b| b.remote && b.name == "origin/main"));
         assert!(!branches.iter().any(|b| b.name.ends_with("/HEAD")));
+        assert!(status.has_remote);
+    }
+
+    /// Dépôt distant nu et deux clones, chacun avec une identité git.
+    fn remote_and_clones() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
+        let remote = tempfile::tempdir().unwrap();
+        run(remote.path(), &["init", "-q", "--bare"]);
+        let seed = repo();
+        run(seed.path(), &["push", "-q", remote.path().to_str().unwrap(), "main"]);
+        let clone = || {
+            let dir = tempfile::tempdir().unwrap();
+            run(dir.path(), &["clone", "-q", remote.path().to_str().unwrap(), "."]);
+            run(dir.path(), &["config", "user.name", "t"]);
+            run(dir.path(), &["config", "user.email", "t@t"]);
+            dir
+        };
+        let (a, b) = (clone(), clone());
+        (remote, a, b)
+    }
+
+    #[test]
+    fn sync_pulls_pushes_and_publishes() {
+        let (_remote, a, b) = remote_and_clones();
+        run(a.path(), &["commit", "-q", "--allow-empty", "-m", "depuis a"]);
+        sync(a.path()).unwrap();
+        assert_eq!(checkout_status(a.path()).unwrap().ahead, 0);
+
+        // `b` est en retard d'un commit : la synchronisation le rattrape.
+        sync(b.path()).unwrap();
+        let status = checkout_status(b.path()).unwrap();
+        assert_eq!((status.ahead, status.behind), (0, 0));
+
+        // Nouvelle branche partie de `origin/main` : publiée sous son nom, pas sur `main`.
+        create(b.path(), "feat", Some("origin/main")).unwrap();
+        assert!(!checkout_status(b.path()).unwrap().has_upstream);
+        sync(b.path()).unwrap();
+        let feat = list_branches(b.path()).unwrap().into_iter().find(|br| br.name == "feat").unwrap();
+        assert_eq!(feat.upstream.as_deref(), Some("origin/feat"));
+    }
+
+    #[test]
+    fn sync_refuses_diverged_branches() {
+        let (_remote, a, b) = remote_and_clones();
+        run(a.path(), &["commit", "-q", "--allow-empty", "-m", "a"]);
+        sync(a.path()).unwrap();
+        run(b.path(), &["commit", "-q", "--allow-empty", "-m", "b"]);
+        let err = sync(b.path()).unwrap_err().to_string();
+        assert!(err.contains("divergé"), "{err}");
+    }
+
+    #[test]
+    fn default_branch_prefers_local() {
+        let branch =
+            |name: &str, remote| Branch { name: name.into(), remote, current: false, upstream: None, committed_at: 0 };
+        let all = [branch("origin/master", true), branch("feat", false), branch("master", false)];
+        assert_eq!(default_branch(&all).map(|b| b.name.as_str()), Some("master"));
+        let remote_only = [branch("feat", false), branch("origin/main", true)];
+        assert_eq!(default_branch(&remote_only).map(|b| b.name.as_str()), Some("origin/main"));
+        assert_eq!(default_branch(&[branch("feat", false)]), None);
     }
 }

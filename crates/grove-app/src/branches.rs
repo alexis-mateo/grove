@@ -3,24 +3,33 @@
 
 use std::path::PathBuf;
 
-use gpui::{Context, FocusHandle, KeyDownEvent, SharedString, Task, Window, div, prelude::*, px, uniform_list};
+use std::time::Duration;
+
+use gpui::{
+    Animation, AnimationExt, Context, FocusHandle, KeyDownEvent, SharedString, Task, Transformation, Window, div,
+    percentage, prelude::*, px, uniform_list,
+};
 use grove_claude::ClaudeStatus;
+use grove_core::WorkspaceId;
 use grove_git::{Branch, CheckoutStatus};
 
 use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::list::{ListScroll, ROW_HEIGHT};
 use crate::marquee::marquee;
+use crate::text_field::{Edit, TextField};
 use crate::theme;
 use crate::ui::{
-    ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field, tooltip,
+    ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field, sized_icon,
+    tooltip,
 };
+use crate::worktrees::Notice;
 
 pub(crate) struct BranchPicker {
     workspace: WorkspaceKey,
     workdir: PathBuf,
     /// `None` pendant le chargement.
     branches: Option<Vec<Branch>>,
-    query: String,
+    query: TextField,
     selected: usize,
     scroll: ListScroll,
     confirm: Option<Confirm>,
@@ -40,18 +49,20 @@ enum Confirm {
 #[derive(Clone)]
 enum Item {
     Branch(Branch),
-    Create(String),
+    /// Nouvelle branche, depuis `base` (la branche courante si `None`).
+    Create { name: String, base: Option<String> },
 }
 
 enum Op {
     Switch(Branch),
-    Create(String),
+    Create { name: String, base: Option<String> },
     Delete { name: String, force: bool },
 }
 
 impl BranchPicker {
     fn items(&self) -> Vec<Item> {
-        let query = self.query.trim().to_lowercase();
+        let name = self.query.as_str().trim();
+        let query = name.to_lowercase();
         let branches = self.branches.iter().flatten();
         let mut items: Vec<Item> = branches
             .clone()
@@ -59,21 +70,30 @@ impl BranchPicker {
             .cloned()
             .map(Item::Branch)
             .collect();
-        let exists = branches.clone().any(|b| !b.remote && b.name == self.query.trim());
+        let exists = branches.clone().any(|b| !b.remote && b.name == name);
         if !query.is_empty() && !exists {
-            items.push(Item::Create(self.query.trim().to_owned()));
+            items.push(Item::Create { name: name.to_owned(), base: None });
+            // Aussi depuis la branche principale, si on n'est pas déjà dessus.
+            let current = branches.clone().find(|b| b.current).map(|b| b.name.as_str());
+            let default = grove_git::default_branch(self.branches.as_deref().unwrap_or_default());
+            if let Some(default) = default.filter(|d| Some(d.name.as_str()) != current) {
+                items.push(Item::Create { name: name.to_owned(), base: Some(default.name.clone()) });
+            }
         }
         items
     }
 }
 
-/// « ↑2 ↓1 ●3 » : avance, retard, fichiers modifiés.
+/// « ↑2 ↓1 ●3 » : avance, retard, fichiers modifiés. Avec un remote, avance et
+/// retard s'affichent sur le bouton de synchronisation.
 fn status_text(status: &CheckoutStatus) -> String {
     let mut parts = Vec::new();
-    if status.ahead > 0 {
+    if status.has_remote {
+        // Rien : voir `render_sync_button`.
+    } else if status.ahead > 0 {
         parts.push(format!("↑{}", status.ahead));
     }
-    if status.behind > 0 {
+    if status.behind > 0 && !status.has_remote {
         parts.push(format!("↓{}", status.behind));
     }
     if status.changed > 0 {
@@ -100,7 +120,7 @@ impl GroveView {
             workspace: key,
             workdir,
             branches: None,
-            query: String::new(),
+            query: TextField::default(),
             selected: 0,
             scroll: ListScroll::default(),
             confirm: None,
@@ -170,7 +190,7 @@ impl GroveView {
                     cx.notify();
                 }
             }
-            Item::Create(name) => self.run_op(Op::Create(name), window, cx),
+            Item::Create { name, base } => self.run_op(Op::Create { name, base }, window, cx),
         }
     }
 
@@ -199,7 +219,7 @@ impl GroveView {
         let work = cx.background_executor().spawn(async move {
             match &op {
                 Op::Switch(branch) => grove_git::switch(&workdir, branch),
-                Op::Create(name) => grove_git::create(&workdir, name, None),
+                Op::Create { name, base } => grove_git::create(&workdir, name, base.as_deref()),
                 Op::Delete { name, force } => grove_git::delete(&workdir, name, *force),
             }
         });
@@ -256,19 +276,15 @@ impl GroveView {
                 picker.selected = (picker.selected + 1).min(count.saturating_sub(1));
                 picker.scroll.reveal(picker.selected, count);
             }
-            "backspace" => {
-                picker.query.pop();
-                picker.selected = 0;
-                picker.scroll.reset();
-            }
-            _ if keystroke.modifiers.control || keystroke.modifiers.platform => return,
-            _ => {
-                let Some(text) = &keystroke.key_char else { return };
-                picker.query.push_str(text);
-                picker.selected = 0;
-                picker.scroll.reset();
-                picker.confirm = None;
-            }
+            _ => match picker.query.key_down(keystroke, cx) {
+                Edit::Ignored => return,
+                Edit::Changed | Edit::Copy { cut: true, .. } => {
+                    picker.selected = 0;
+                    picker.scroll.reset();
+                    picker.confirm = None;
+                }
+                Edit::Selection | Edit::Copy { .. } => {}
+            },
         }
         cx.stop_propagation();
         cx.notify();
@@ -325,10 +341,16 @@ impl GroveView {
                     })
                     .into_any_element()
             }
-            Item::Create(name) => row
+            Item::Create { name, base } => row
                 .text_color(theme::text())
                 .child(icon(Icon::Plus, theme::accent()))
-                .child(marquee("branch-create", format!("Créer « {name} » depuis la branche courante")))
+                .child(marquee(
+                    SharedString::from(format!("branch-create-{index}")),
+                    match base {
+                        Some(base) => format!("Créer « {name} » depuis « {base} »"),
+                        None => format!("Créer « {name} » depuis la branche courante"),
+                    },
+                ))
                 .into_any_element(),
         }
     }
@@ -354,7 +376,12 @@ impl GroveView {
                 .cursor_pointer()
                 .when(self.branch_picker.is_some(), |d| d.bg(theme::selected()))
                 .tooltip(tooltip("Branches · Ctrl+Shift+G"))
-                .on_click(cx.listener(|this, _, window, cx| this.open_branch_picker(window, cx)))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    // Le clic qui vient de fermer le sélecteur (clic extérieur) ne le rouvre pas.
+                    if !std::mem::take(&mut this.popover_dismissed) {
+                        this.open_branch_picker(window, cx);
+                    }
+                }))
                 .child(icon(Icon::GitBranch, theme::accent()))
                 .child(div().flex().max_w(px(200.0)).min_w_0().child(marquee("branch-chip-label", head.label().to_owned())))
                 .when(!status.is_empty(), |d| d.child(div().text_xs().text_color(theme::text_faint()).child(status)))
@@ -445,6 +472,10 @@ impl GroveView {
 
         let panel = popover("branch-picker", &picker.focus, px(440.0))
             .on_key_down(cx.listener(Self::branch_picker_key_down))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                this.popover_dismissed = true;
+                this.close_branch_picker(window, cx);
+            }))
             .child(search_field(&picker.query, "Chercher ou créer une branche…"))
             .child(div().p_1().child(list))
             .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
@@ -479,5 +510,102 @@ impl GroveView {
                     .child(hint("Échap", "fermer")),
             );
         Some(picker.scroll.track_drag(panel, count).into_any_element())
+    }
+
+    /// Synchronise l'espace avec son remote (fetch, pull en fast-forward, push),
+    /// ou publie la branche si elle n'a pas de branche suivie.
+    pub(crate) fn sync_workspace(&mut self, workspace: WorkspaceId, cx: &mut Context<Self>) {
+        let Some(path) = self.state.projects.iter().flat_map(|p| &p.workspaces).find(|w| w.id == workspace).map(|w| w.path.clone())
+        else {
+            return;
+        };
+        let Some(git) = self.git.get_mut(&workspace).filter(|g| !g.syncing) else { return };
+        git.syncing = true;
+        let work = cx.background_executor().spawn(async move { grove_git::sync(&path) });
+        git.sync_task = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(git) = this.git.get_mut(&workspace) {
+                    git.syncing = false;
+                }
+                match result {
+                    Ok(()) => {
+                        if this.notice.as_ref().is_some_and(|n| n.workspace == workspace && !n.suggest_worktree) {
+                            this.notice = None;
+                        }
+                    }
+                    Err(err) => {
+                        this.notice = Some(Notice {
+                            workspace,
+                            text: format!("Synchronisation impossible : {err:#}"),
+                            suggest_worktree: false,
+                        })
+                    }
+                }
+                this.refresh_git_status(workspace, cx);
+                if this.branch_picker.as_ref().is_some_and(|p| p.workspace.1 == workspace) {
+                    this.reload_branches(cx);
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Bouton de synchronisation de la barre d'onglets, comme celui de VS Code :
+    /// « ↻ 2↓ 1↑ », ou « publier » pour une branche sans branche suivie.
+    pub(crate) fn render_sync_button(&self, key: WorkspaceKey, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let git = self.git.get(&key.1)?;
+        let status = git.status?;
+        if !status.has_remote || git.head.as_ref().is_some_and(|h| !matches!(h, grove_git::Head::Branch(_))) {
+            return None;
+        }
+        let workspace = key.1;
+        let (glyph, hint) = match (git.syncing, status.has_upstream) {
+            (true, _) => (Icon::Refresh, "Synchronisation…".to_owned()),
+            (false, false) => (Icon::CloudUpload, "Publier la branche".to_owned()),
+            (false, true) => (
+                Icon::Refresh,
+                format!(
+                    "Synchroniser : récupérer, tirer {} et pousser {} commit(s)",
+                    status.behind, status.ahead
+                ),
+            ),
+        };
+        let color = if status.ahead > 0 || status.behind > 0 { theme::accent() } else { theme::text_muted() };
+        let glyph = sized_icon(glyph, px(14.0), color);
+        let glyph = if git.syncing {
+            glyph
+                .with_animation(
+                    "sync-spin",
+                    Animation::new(Duration::from_millis(900)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element()
+        } else {
+            glyph.into_any_element()
+        };
+        let count = |arrow: &str, n: u32| (n > 0).then(|| div().child(format!("{n}{arrow}")));
+        Some(
+            div()
+                .id("sync-button")
+                .h(px(26.0))
+                .px_1p5()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .rounded_md()
+                .text_xs()
+                .text_color(theme::text_muted())
+                .hover(|s| s.bg(theme::hover()).text_color(theme::text()))
+                .cursor_pointer()
+                .tooltip(tooltip(hint))
+                .on_click(cx.listener(move |this, _, _, cx| this.sync_workspace(workspace, cx)))
+                .child(glyph)
+                .children(count("↓", status.behind))
+                .children(count("↑", status.ahead))
+                .into_any_element(),
+        )
     }
 }

@@ -10,6 +10,7 @@ mod mouse;
 mod sidebar;
 mod tab_bar;
 mod terminal_view;
+mod text_field;
 mod theme;
 mod ui;
 mod usage;

@@ -10,6 +10,7 @@ use grove_git::{Branch, NewWorktree};
 use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::list::{ListScroll, ROW_HEIGHT};
 use crate::marquee::marquee;
+use crate::text_field::{Edit, TextField};
 use crate::theme;
 use crate::ui::{ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field};
 
@@ -29,7 +30,7 @@ pub(crate) struct WorktreeDialog {
     branches: Option<Vec<Branch>>,
     /// Branches déjà extraites dans un worktree : git refuse de les extraire deux fois.
     checked_out: Vec<String>,
-    query: String,
+    query: TextField,
     selected: usize,
     scroll: ListScroll,
     /// `.grove.toml`, lu à l'ouverture de la fenêtre.
@@ -97,10 +98,7 @@ impl WorktreeDialog {
     fn bases(&self) -> Vec<String> {
         let Some(branches) = &self.branches else { return Vec::new() };
         let mut bases = Vec::new();
-        let default = ["main", "master", "develop"]
-            .into_iter()
-            .find(|name| branches.iter().any(|b| !b.remote && b.name == *name));
-        bases.extend(default.map(str::to_owned));
+        bases.extend(grove_git::default_branch(branches).map(|b| b.name.clone()));
         if let Some(current) = branches.iter().find(|b| b.current)
             && !bases.contains(&current.name)
         {
@@ -110,7 +108,7 @@ impl WorktreeDialog {
     }
 
     fn items(&self) -> Vec<Item> {
-        let name = self.query.trim();
+        let name = self.query.as_str().trim();
         if self.mode == DialogMode::Promote {
             // La nouvelle branche part du commit courant, où se trouvent les modifications.
             return if name.is_empty() { Vec::new() } else { vec![Item::New { name: name.into(), base: "HEAD".into() }] };
@@ -211,7 +209,7 @@ impl GroveView {
             mode,
             branches: None,
             checked_out: Vec::new(),
-            query: String::new(),
+            query: TextField::default(),
             selected: 0,
             scroll: ListScroll::default(),
             config: ProjectConfig::load(&root).unwrap_or_default().worktree,
@@ -302,18 +300,14 @@ impl GroveView {
                 dialog.selected = (dialog.selected + 1).min(count.saturating_sub(1));
                 dialog.scroll.reveal(dialog.selected, count);
             }
-            "backspace" => {
-                dialog.query.pop();
-                dialog.selected = 0;
-                dialog.scroll.reset();
-            }
-            _ if keystroke.modifiers.control || keystroke.modifiers.platform => return,
-            _ => {
-                let Some(text) = &keystroke.key_char else { return };
-                dialog.query.push_str(text);
-                dialog.selected = 0;
-                dialog.scroll.reset();
-            }
+            _ => match dialog.query.key_down(keystroke, cx) {
+                Edit::Ignored => return,
+                Edit::Changed | Edit::Copy { cut: true, .. } => {
+                    dialog.selected = 0;
+                    dialog.scroll.reset();
+                }
+                Edit::Selection | Edit::Copy { .. } => {}
+            },
         }
         cx.stop_propagation();
         cx.notify();
@@ -366,6 +360,10 @@ impl GroveView {
 
         let panel = popover("worktree-dialog", &dialog.focus, px(480.0))
             .on_key_down(cx.listener(Self::worktree_dialog_key_down))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                this.popover_dismissed = true;
+                this.close_worktree_dialog(window, cx);
+            }))
             .child(
                 div()
                     .flex()
@@ -542,6 +540,12 @@ impl GroveView {
         Some(
             popover("remove-dialog", &dialog.focus, px(460.0))
                 .on_key_down(cx.listener(Self::remove_dialog_key_down))
+                .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                    this.popover_dismissed = true;
+                    this.remove_dialog = None;
+                    this.focus_active(window, cx);
+                    cx.notify();
+                }))
                 .p_4()
                 .gap_3()
                 .child(

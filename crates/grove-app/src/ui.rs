@@ -7,6 +7,7 @@ use gpui::{
     prelude::*, px, svg,
 };
 
+use crate::text_field::TextField;
 use crate::theme;
 
 macro_rules! icons {
@@ -51,6 +52,7 @@ icons! {
     ChevronDown => "chevron-down",
     ChevronRight => "chevron-right",
     Claude => "claude",
+    CloudUpload => "cloud-upload",
     CornerDownRight => "corner-down-right",
     Folder => "folder",
     FolderPlus => "folder-plus",
@@ -60,6 +62,7 @@ icons! {
     PanelLeft => "panel-left",
     PanelRight => "panel-right",
     Plus => "plus",
+    Refresh => "refresh",
     Search => "search",
     Terminal => "terminal",
     Trash => "trash",
@@ -218,7 +221,7 @@ pub fn popover(id: &'static str, focus: &gpui::FocusHandle, width: Pixels) -> St
 }
 
 /// Champ de saisie en tête d'un panneau flottant (le texte vient des touches).
-pub fn search_field(query: &str, placeholder: &'static str) -> Div {
+pub fn search_field(field: &TextField, placeholder: &'static str) -> Div {
     div()
         .h(px(40.0))
         .flex_none()
@@ -229,15 +232,7 @@ pub fn search_field(query: &str, placeholder: &'static str) -> Div {
         .border_b_1()
         .border_color(theme::border())
         .child(icon(Icon::Search, theme::text_faint()))
-        .child(if query.is_empty() {
-            div().flex().text_color(theme::text_faint()).child(placeholder)
-        } else {
-            div()
-                .flex()
-                .text_color(theme::text())
-                .child(query.to_owned())
-                .child(div().text_color(theme::accent()).child("▏"))
-        })
+        .child(field.render(placeholder))
 }
 
 /// Ligne de sélection d'un panneau flottant. `id` sert aussi de groupe de survol.

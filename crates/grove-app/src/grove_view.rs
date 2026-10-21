@@ -17,6 +17,7 @@ use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
 use crate::sidebar::{DEFAULT_SIDEBAR_WIDTH, DraggedSidebar};
 use crate::terminal_view::{Exited, TerminalView};
+use crate::text_field::TextField;
 use crate::ui::{Icon, kbd, sized_icon};
 use crate::{theme, window_frame};
 
@@ -71,6 +72,9 @@ pub(crate) struct GitState {
     pub head: Option<Head>,
     /// Avance/retard et fichiers modifiés, rafraîchis en tâche de fond.
     pub status: Option<CheckoutStatus>,
+    /// Synchronisation avec le remote en cours (bouton de la barre d'onglets).
+    pub syncing: bool,
+    pub sync_task: Option<Task<()>>,
     _watcher: Option<HeadWatcher>,
 }
 
@@ -80,7 +84,7 @@ const GIT_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 /// Onglet en cours de renommage.
 pub(crate) struct Rename {
     pub tab: TabId,
-    pub text: String,
+    pub field: TextField,
     pub focus: FocusHandle,
 }
 
@@ -94,6 +98,9 @@ pub struct GroveView {
     pub(crate) sidebar_width: Pixels,
     /// Écriture différée de la largeur pendant un redimensionnement.
     pub(crate) sidebar_save: Option<Task<()>>,
+    /// Le clic en cours vient de fermer un panneau flottant (clic à l'extérieur) :
+    /// le bouton qui l'ouvre ne doit pas le rouvrir aussitôt.
+    pub(crate) popover_dismissed: bool,
     pub(crate) rename: Option<Rename>,
     pub(crate) claude: ClaudeRuntime,
     pub(crate) branch_picker: Option<BranchPicker>,
@@ -174,6 +181,7 @@ impl GroveView {
             sidebar_visible: true,
             sidebar_width,
             sidebar_save: None,
+            popover_dismissed: false,
             rename: None,
             focus_handle: cx.focus_handle(),
             git_events,
@@ -277,7 +285,7 @@ impl GroveView {
         })
         .map_err(|err| log::warn!("surveillance de {} : {err:#}", repo.git_dir.display()))
         .ok();
-        self.git.insert(workspace, GitState { head, status: None, _watcher: watcher });
+        self.git.insert(workspace, GitState { head, status: None, syncing: false, sync_task: None, _watcher: watcher });
         self.refresh_git_status(workspace, cx);
     }
 
@@ -378,10 +386,11 @@ impl GroveView {
     }
 
     pub(crate) fn start_rename(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.tab_label(tab, cx).to_string();
+        // Nom actuel, sélectionné : la saisie le remplace.
+        let field = TextField::selected(self.tab_label(tab, cx).to_string());
         let focus = cx.focus_handle();
         window.focus(&focus);
-        self.rename = Some(Rename { tab, text, focus });
+        self.rename = Some(Rename { tab, field, focus });
         cx.notify();
     }
 
@@ -389,7 +398,7 @@ impl GroveView {
         let Some(rename) = self.rename.take() else { return };
         if commit && let Some(key) = self.state.active_workspace {
             if let Some(workspace) = self.state.workspace_mut(key) {
-                workspace.rename_tab(rename.tab, &rename.text);
+                workspace.rename_tab(rename.tab, rename.field.as_str());
                 self.save();
             }
         }
@@ -631,6 +640,8 @@ impl Render for GroveView {
                 cx.notify();
             }))
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedSidebar>, _, cx| this.resize_sidebar(event, cx)))
+            // Avant les panneaux flottants, qui le relèvent s'ils se ferment sur ce clic.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.popover_dismissed = false))
             .size_full()
             .relative()
             .flex()

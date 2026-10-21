@@ -43,12 +43,22 @@ cargo test --workspace
 | `Ctrl+Shift+J` | Aller à la prochaine session Claude qui attend une réponse |
 | `Ctrl+Shift+I` | Afficher / masquer le panneau de session |
 | `Ctrl+Shift+H` | Sessions passées de l'espace (clic = reprendre) |
-| `Ctrl+Shift+G` | Sélecteur de branches (chercher, changer, créer, supprimer, déplacer le travail dans un worktree) |
+| `Ctrl+Shift+G` | Sélecteur de branches (chercher, changer, créer depuis la branche courante ou la branche principale, supprimer, déplacer le travail dans un worktree) |
 | `Ctrl+Shift+N` | Nouvel espace de travail (worktree) ; `Maj+Entrée` l'ouvre avec Claude |
 | `Ctrl+Shift+V` | Coller |
 | `Shift+PageUp/PageDown` | Défiler dans le scrollback |
 
 Clic milieu sur un onglet : le fermer.
+
+Champs de saisie (recherche de branche, nouvel espace, renommage) : `Ctrl+A`
+sélectionne tout, `Ctrl+C` / `Ctrl+X` copient / coupent (tout le texte sans
+sélection), `Ctrl+V` colle, `Ctrl+Retour arrière` efface le dernier segment.
+Un clic en dehors d'un panneau flottant le ferme.
+
+Bouton de synchronisation (à droite de la branche, si le dépôt a un remote) :
+comme dans VS Code, il récupère le distant, tire en fast-forward (`↓`) puis
+pousse (`↑`) ; une branche sans branche suivie est publiée (`push -u`). Si la
+branche locale et la distante ont divergé, rien n'est fait et un message le dit.
 
 ## Fichiers
 

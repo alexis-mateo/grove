@@ -10,6 +10,7 @@ use grove_core::{TabId, TabKind};
 use crate::claude::status_badge;
 use crate::grove_view::{GroveView, NewTab, ToggleSidebar};
 use crate::marquee::marquee;
+use crate::text_field::Edit;
 use crate::theme;
 use crate::ui::{Icon, icon, icon_button, sized_icon, tooltip, vertical_divider};
 use crate::window_frame::{TOP_BAR_HEIGHT, drag_region, window_controls};
@@ -73,8 +74,9 @@ impl GroveView {
                     .collect();
                 let claude_tab = active.is_some_and(|tab| self.claude.sessions.contains_key(&tab));
 
+                let sync = self.render_sync_button(key, cx);
                 bar.children(self.render_branch_chip(key, cx).map(|chip| {
-                    div().flex().flex_none().items_center().child(chip).child(vertical_divider())
+                    div().flex().flex_none().items_center().child(chip).children(sync).child(vertical_divider())
                 }))
                 .child(div().flex().items_center().gap_1().min_w_0().flex_shrink().children(tabs))
                 .child(
@@ -158,8 +160,7 @@ impl GroveView {
                 .border_1()
                 .border_color(theme::accent())
                 .text_color(theme::text())
-                .child(rename.text.clone())
-                .child(div().text_color(theme::accent()).child("▏"))
+                .child(rename.field.render(""))
                 .into_any_element(),
             None => div()
                 .flex()
@@ -238,17 +239,11 @@ impl GroveView {
         match keystroke.key.as_str() {
             "enter" => self.finish_rename(true, window, cx),
             "escape" => self.finish_rename(false, window, cx),
-            "backspace" => {
-                if let Some(rename) = &mut self.rename {
-                    rename.text.pop();
-                }
-            }
-            _ if keystroke.modifiers.control || keystroke.modifiers.platform => return,
             _ => {
-                let (Some(rename), Some(text)) = (&mut self.rename, &keystroke.key_char) else {
+                let Some(rename) = &mut self.rename else { return };
+                if rename.field.key_down(keystroke, cx) == Edit::Ignored {
                     return;
-                };
-                rename.text.push_str(text);
+                }
             }
         }
         cx.stop_propagation();
