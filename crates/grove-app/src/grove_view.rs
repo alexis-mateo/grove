@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, PathPromptOptions, SharedString, Task, Window,
-    actions, div, prelude::*,
+    App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, PathPromptOptions, Pixels, SharedString, Task,
+    Window, actions, div, prelude::*, px,
 };
 use grove_claude::ClaudeStatus;
 use grove_core::{Config, Paths, ProjectId, State, TabId, TabKind, WorkspaceId, WorkspaceKind};
@@ -15,7 +15,9 @@ use grove_git::{CheckoutStatus, Head, HeadWatcher};
 use crate::branches::BranchPicker;
 use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
+use crate::sidebar::{DEFAULT_SIDEBAR_WIDTH, DraggedSidebar};
 use crate::terminal_view::{Exited, TerminalView};
+use crate::ui::{Icon, kbd, sized_icon};
 use crate::{theme, window_frame};
 
 actions!(
@@ -89,6 +91,7 @@ pub struct GroveView {
     pub(crate) terminals: HashMap<TabId, Entity<TerminalView>>,
     pub(crate) git: HashMap<WorkspaceId, GitState>,
     pub(crate) sidebar_visible: bool,
+    pub(crate) sidebar_width: Pixels,
     pub(crate) rename: Option<Rename>,
     pub(crate) claude: ClaudeRuntime,
     pub(crate) branch_picker: Option<BranchPicker>,
@@ -152,6 +155,7 @@ impl GroveView {
         });
 
         let claude = ClaudeRuntime::start(&paths, config.claude.usage_api, window, cx);
+        let sidebar_width = state.sidebar_width.map(px).unwrap_or(DEFAULT_SIDEBAR_WIDTH);
         let mut this = Self {
             claude,
             branch_picker: None,
@@ -166,6 +170,7 @@ impl GroveView {
             terminals: HashMap::new(),
             git: HashMap::new(),
             sidebar_visible: true,
+            sidebar_width,
             rename: None,
             focus_handle: cx.focus_handle(),
             git_events,
@@ -525,7 +530,7 @@ impl GroveView {
         .detach();
     }
 
-    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         cx.notify();
     }
@@ -562,7 +567,7 @@ impl Render for GroveView {
             .h_full()
             .flex()
             .flex_col()
-            .when(self.state.active_workspace.is_some(), |d| d.child(self.render_tab_bar(cx)))
+            .child(self.render_tab_bar(window, cx))
             .children(self.render_notice(cx))
             .child(
                 // Zone sous la barre d'onglets ; le sélecteur de branches s'affiche par-dessus.
@@ -622,22 +627,26 @@ impl Render for GroveView {
                 this.claude.panel_visible = !this.claude.panel_visible;
                 cx.notify();
             }))
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedSidebar>, _, cx| this.resize_sidebar(event, cx)))
+            .on_drop(cx.listener(|this, _: &DraggedSidebar, _, _| this.finish_sidebar_resize()))
             .size_full()
+            .relative()
             .flex()
             .bg(theme::background())
             .text_color(theme::text())
             .when(self.sidebar_visible, |d| d.child(self.render_sidebar(cx)))
-            .child(main);
+            .child(main)
+            .when(self.sidebar_visible, |d| d.child(self.render_sidebar_handle(cx)));
 
-        window_frame::frame(title, content.into_any_element(), window, cx)
+        window_frame::frame(content.into_any_element(), window)
     }
 }
 
 fn placeholder(no_project: bool) -> impl IntoElement {
-    let (message, shortcut) = if no_project {
-        ("Aucun projet", "Ctrl+Shift+O pour en ajouter un")
+    let (glyph, message, hint, shortcut) = if no_project {
+        (Icon::FolderPlus, "Aucun projet", "Ajoute un dossier pour commencer", "Ctrl+Shift+O")
     } else {
-        ("Aucun terminal", "Ctrl+Shift+T pour en ouvrir un")
+        (Icon::Terminal, "Aucun terminal", "Ouvre un terminal dans cet espace", "Ctrl+Shift+T")
     };
     div()
         .size_full()
@@ -645,7 +654,27 @@ fn placeholder(no_project: bool) -> impl IntoElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap_1()
-        .child(div().text_color(theme::text()).child(message))
-        .child(div().text_sm().text_color(theme::text_muted()).child(shortcut))
+        .gap_3()
+        .child(
+            div()
+                .size(px(44.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme::border_strong())
+                .bg(theme::panel())
+                .child(sized_icon(glyph, px(20.0), theme::text_muted())),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_1()
+                .child(div().text_color(theme::text()).font_weight(gpui::FontWeight::MEDIUM).child(message))
+                .child(div().text_sm().text_color(theme::text_muted()).child(hint)),
+        )
+        .child(kbd(shortcut))
 }

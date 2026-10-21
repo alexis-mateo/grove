@@ -181,7 +181,7 @@ fn ring(percent: f64, size: Pixels) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, _, window, _| {
-            let stroke = px(3.0);
+            let stroke = px(2.5);
             let center = bounds.center();
             let radius = f32::from(bounds.size.width.min(bounds.size.height)) / 2.0 - f32::from(stroke) / 2.0;
             let arc = |from: f32, to: f32| {
@@ -213,15 +213,15 @@ fn bar(percent: f64, elapsed: Option<f32>) -> impl IntoElement {
     let fill = (percent / 100.0).clamp(0.0, 1.0) as f32;
     div()
         .relative()
-        .h(px(6.0))
+        .h(px(4.0))
         .w_full()
-        .rounded_sm()
+        .rounded_full()
         .bg(theme::selected())
-        .child(div().h_full().w(gpui::relative(fill)).rounded_sm().bg(level_color(percent)))
+        .child(div().h_full().w(gpui::relative(fill)).rounded_full().bg(level_color(percent)))
         .children(elapsed.map(|e| {
             div()
                 .absolute()
-                .top(px(-2.0))
+                .top(px(-3.0))
                 .left(gpui::relative(e))
                 .w(px(1.0))
                 .h(px(10.0))
@@ -240,9 +240,10 @@ impl GroveView {
             .cursor_pointer()
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
+            .gap_2p5()
+            .px_2()
+            .py_1p5()
+            .rounded_md()
             .hover(|s| s.bg(theme::hover()))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.claude.usage.expanded = !this.claude.usage.expanded;
@@ -251,9 +252,9 @@ impl GroveView {
             .child(
                 div()
                     .relative()
-                    .size(px(30.0))
+                    .size(px(28.0))
                     .flex_none()
-                    .child(ring(if five_expired { 0.0 } else { five.used_percent }, px(30.0)))
+                    .child(ring(if five_expired { 0.0 } else { five.used_percent }, px(28.0)))
                     .child(
                         div()
                             .absolute()
@@ -262,6 +263,7 @@ impl GroveView {
                             .items_center()
                             .justify_center()
                             .text_size(px(9.0))
+                            .text_color(theme::text_muted())
                             .child(if five_expired { "0".to_owned() } else { format!("{:.0}", five.used_percent) }),
                     ),
             )
@@ -277,7 +279,7 @@ impl GroveView {
                     } else {
                         format!("Limite 5 h · {:.0} %", five.used_percent)
                     }))
-                    .child(div().text_color(theme::text_muted()).child(match five.resets_at {
+                    .child(div().text_color(theme::text_faint()).child(match five.resets_at {
                         _ if five_expired => "nouvelle fenêtre".to_owned(),
                         Some(at) => format!("reset dans {}", countdown(at)),
                         None => "reset inconnu".to_owned(),
@@ -287,7 +289,7 @@ impl GroveView {
                 div()
                     .flex_none()
                     .text_xs()
-                    .text_color(if week.used_percent >= 70.0 { level_color(week.used_percent) } else { theme::text_muted() })
+                    .text_color(if week.used_percent >= 70.0 { level_color(week.used_percent) } else { theme::text_faint() })
                     .child(format!("sem. {:.0} %", week.used_percent))
             }));
 
@@ -297,18 +299,22 @@ impl GroveView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap_1p5()
                     .child(
                         div()
                             .flex()
                             .justify_between()
-                            .child(div().text_color(theme::text()).child(label))
-                            .child(if is_expired { "réinitialisée".to_owned() } else { format!("{:.0} %", window.used_percent) }),
+                            .child(div().text_color(theme::text_muted()).child(label))
+                            .child(div().text_color(theme::text()).child(if is_expired {
+                                "réinitialisée".to_owned()
+                            } else {
+                                format!("{:.0} %", window.used_percent)
+                            })),
                     )
                     .child(if is_expired { bar(0.0, None) } else { bar(window.used_percent, elapsed_fraction(&window, length)) })
                     .children(window.resets_at.filter(|_| !is_expired).map(|at| {
                         div()
-                            .text_color(theme::text_muted())
+                            .text_color(theme::text_faint())
                             .child(format!("reset {} (dans {})", reset_date(at), countdown(at)))
                     }))
             };
@@ -322,8 +328,8 @@ impl GroveView {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .px_3()
-                .pt_3()
+                .px_2()
+                .pt_2()
                 .pb_1()
                 .text_xs()
                 .child(window_row("Fenêtre de 5 h", five, FIVE_HOURS))
@@ -337,7 +343,7 @@ impl GroveView {
                         .flex_wrap()
                         .justify_between()
                         .gap_x_2()
-                        .text_color(theme::text_muted())
+                        .text_color(theme::text_faint())
                         .child(div().flex_none().child("│ repère : temps écoulé"))
                         .child(div().flex_none().child(updated)),
                 )
@@ -346,12 +352,10 @@ impl GroveView {
         Some(
             div()
                 .flex_none()
-                .flex()
-                .flex_col()
+                .p_2()
                 .border_t_1()
                 .border_color(theme::border())
-                .children(detail)
-                .child(summary)
+                .child(div().flex().flex_col().gap_1().children(detail).child(summary))
                 .into_any_element(),
         )
     }

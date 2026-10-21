@@ -10,8 +10,10 @@ use grove_git::{Branch, CheckoutStatus};
 use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::list::{ListScroll, ROW_HEIGHT};
 use crate::marquee::marquee;
-use crate::sidebar::icon_button;
 use crate::theme;
+use crate::ui::{
+    ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field, tooltip,
+};
 
 pub(crate) struct BranchPicker {
     workspace: WorkspaceKey,
@@ -277,67 +279,59 @@ impl GroveView {
     }
 
     fn branch_row(&self, index: usize, item: &Item, selected: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
-                let row = div()
-            .id(SharedString::from(format!("branch-item-{index}")))
-            .group(SharedString::from(format!("branch-item-{index}")))
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .h(ROW_HEIGHT)
-        .pr(px(14.0))
-        .cursor_pointer()
-            .when(selected, |d| d.bg(theme::selected()))
-            .hover(|s| s.bg(theme::hover()))
-            .on_click(cx.listener({
-                let item = item.clone();
-                move |this, _, window, cx| this.activate_item(item.clone(), window, cx)
-            }));
+        let row = list_row(format!("branch-item-{index}"), selected).h(ROW_HEIGHT).on_click(cx.listener({
+            let item = item.clone();
+            move |this, _, window, cx| this.activate_item(item.clone(), window, cx)
+        }));
         match item {
             Item::Branch(branch) => {
                 let name = branch.name.clone();
                 let deletable = !branch.remote && !branch.current;
-                row.child(
-                    div()
-                        .w(px(12.0))
-                        .text_color(theme::accent())
-                        .child(if branch.current { "✓" } else { "" }),
-                )
-                .child(
-                    marquee(SharedString::from(format!("branch-name-{index}")), branch.name.clone())
-                        .when(branch.remote, |d| d.text_color(theme::text_muted())),
-                )
-                // Branche suivie : seulement si elle apporte une information (pas `origin/<même nom>`).
-        .children(branch.upstream.clone().filter(|u| *u != format!("origin/{}", branch.name)).map(|u| {
-            div()
-                .flex_none()
-                .max_w(px(150.0))
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .text_xs()
-                .text_color(theme::text_muted())
-                .child(u)
-        }))
-                .when(deletable, |d| {
-                    d.child(
-                        icon_button(SharedString::from(format!("delete-branch-{index}")), "×")
-                            .invisible()
-                            .group_hover(SharedString::from(format!("branch-item-{index}")), |s| s.visible())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(picker) = &mut this.branch_picker {
-                                    picker.confirm = Some(Confirm::Delete { name: name.clone(), force: false });
-                                    cx.notify();
-                                }
-                            })),
+                let glyph = match (branch.current, branch.remote) {
+                    (true, _) => icon(Icon::Check, theme::accent()),
+                    (false, true) => icon(Icon::ArrowDown, theme::text_faint()),
+                    (false, false) => icon(Icon::GitBranch, theme::text_faint()),
+                };
+                row.child(glyph)
+                    .child(
+                        marquee(SharedString::from(format!("branch-name-{index}")), branch.name.clone())
+                            .text_color(if branch.remote { theme::text_muted() } else { theme::text() }),
                     )
-                })
-                .into_any_element()
+                    // Branche suivie : seulement si elle apporte une information (pas `origin/<même nom>`).
+                    .children(branch.upstream.clone().filter(|u| *u != format!("origin/{}", branch.name)).map(|u| {
+                        div()
+                            .flex_none()
+                            .max_w(px(150.0))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_xs()
+                            .text_color(theme::text_faint())
+                            .child(u)
+                    }))
+                    .when(deletable, |d| {
+                        d.child(
+                            icon_button(format!("delete-branch-{index}"), Icon::Trash)
+                                .size(px(20.0))
+                                .invisible()
+                                .group_hover(SharedString::from(format!("branch-item-{index}")), |s| s.visible())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(picker) = &mut this.branch_picker {
+                                        picker.confirm = Some(Confirm::Delete { name: name.clone(), force: false });
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                    })
+                    .into_any_element()
             }
             Item::Create(name) => row
-                .child(div().w(px(12.0)).text_color(theme::accent()).child("+"))
-                .child(marquee("branch-create", format!("Créer « {name} » depuis la branche courante")))
+                .child(icon(Icon::Plus, theme::accent()))
+                .child(
+                    marquee("branch-create", format!("Créer « {name} » depuis la branche courante"))
+                        .text_color(theme::text()),
+                )
                 .into_any_element(),
         }
     }
@@ -350,23 +344,23 @@ impl GroveView {
         Some(
             div()
                 .id("branch-chip")
-                .h(px(22.0))
-                .mx_1()
+                .h(px(26.0))
                 .px_2()
                 .flex()
+                .flex_none()
                 .items_center()
-                .gap_2()
-                .rounded_sm()
+                .gap_1p5()
+                .rounded_md()
                 .text_sm()
                 .text_color(theme::text())
-                .bg(theme::hover())
-                .hover(|s| s.bg(theme::selected()))
+                .hover(|s| s.bg(theme::hover()))
                 .cursor_pointer()
                 .when(self.branch_picker.is_some(), |d| d.bg(theme::selected()))
+                .tooltip(tooltip("Branches · Ctrl+Shift+G"))
                 .on_click(cx.listener(|this, _, window, cx| this.open_branch_picker(window, cx)))
-                .child(div().text_color(theme::accent()).child("⎇"))
-                .child(div().flex().max_w(px(220.0)).min_w_0().child(marquee("branch-chip-label", head.label().to_owned())))
-                .when(!status.is_empty(), |d| d.child(div().text_xs().text_color(theme::text_muted()).child(status)))
+                .child(icon(Icon::GitBranch, theme::accent()))
+                .child(div().flex().max_w(px(200.0)).min_w_0().child(marquee("branch-chip-label", head.label().to_owned())))
+                .when(!status.is_empty(), |d| d.child(div().text_xs().text_color(theme::text_faint()).child(status)))
                 .into_any_element(),
         )
     }
@@ -374,21 +368,6 @@ impl GroveView {
     pub(crate) fn render_branch_picker(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let picker = self.branch_picker.as_ref()?;
         let items = picker.items();
-
-        let search = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .border_color(theme::border())
-            .child(div().text_color(theme::text_muted()).child("⎇"))
-            .child(if picker.query.is_empty() {
-                div().text_color(theme::text_muted()).child("Chercher ou créer une branche…")
-            } else {
-                div().flex().child(picker.query.clone()).child(div().text_color(theme::accent()).child("▏"))
-            });
 
         let count = items.len();
         let list = div()
@@ -412,42 +391,49 @@ impl GroveView {
             .children(picker.scroll.scrollbar(count));
 
         let confirm = picker.confirm.as_ref().map(|confirm| {
-            let (lines, action): (Vec<String>, &str) = match confirm {
+            let (lines, action, style): (Vec<String>, &str, ButtonStyle) = match confirm {
                 Confirm::Switch { branch, warnings } => {
                     let mut lines = vec![format!("Passer sur « {} » ?", branch.name)];
                     lines.extend(warnings.iter().cloned());
-                    (lines, "Changer quand même")
+                    (lines, "Changer quand même", ButtonStyle::Primary)
                 }
-                Confirm::Delete { name, force: false } => (vec![format!("Supprimer la branche « {name} » ?")], "Supprimer"),
+                Confirm::Delete { name, force: false } => {
+                    (vec![format!("Supprimer la branche « {name} » ?")], "Supprimer", ButtonStyle::Danger)
+                }
                 Confirm::Delete { name, force: true } => (
                     vec![format!("« {name} » n'est pas fusionnée : ses commits seront perdus.")],
                     "Supprimer quand même",
+                    ButtonStyle::Danger,
                 ),
             };
+            // Première ligne : la question ; les suivantes : les avertissements.
+            let mut lines = lines.into_iter();
             div()
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap_1()
                 .p_3()
                 .border_t_1()
                 .border_color(theme::border())
-                .bg(theme::background())
-                .children(lines.into_iter().map(|l| div().child(l)))
+                .bg(theme::panel())
+                .children(lines.next().map(|l| div().text_color(theme::text()).child(l)))
+                .children(lines.map(|l| div().text_xs().text_color(theme::waiting()).child(l)))
                 .child(
                     div()
                         .flex()
                         .gap_2()
+                        .pt_2()
                         .justify_end()
-                        .child(
-                            button("branch-cancel", "Annuler (Échap)", false).on_click(cx.listener(|this, _, _, cx| {
+                        .child(button("branch-cancel", "Annuler", ButtonStyle::Secondary).on_click(cx.listener(
+                            |this, _, _, cx| {
                                 if let Some(picker) = &mut this.branch_picker {
                                     picker.confirm = None;
                                     cx.notify();
                                 }
-                            })),
-                        )
+                            },
+                        )))
                         .child(
-                            button("branch-confirm", action, true)
+                            button("branch-confirm", action, style)
                                 .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))),
                         ),
                 )
@@ -460,61 +446,41 @@ impl GroveView {
             _ => None,
         };
 
-        let panel = div()
-                .id("branch-picker")
-                .track_focus(&picker.focus)
-                .on_key_down(cx.listener(Self::branch_picker_key_down))
-                .occlude()
-                .absolute()
-                .top(px(4.0))
-                .left(px(8.0))
-                .w(px(420.0))
-                .max_h(px(460.0))
-                .flex()
-                .flex_col()
-                .rounded_md()
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::panel())
-                .shadow_lg()
-                .text_sm()
-                .child(search)
-                .child(div().py_1().child(list))
-                .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
-                .children(picker.error.clone().map(|e| div().px_3().py_2().text_color(theme::danger()).child(e)))
-                .children(confirm)
-                .when(self.is_direct(picker.workspace), |d| {
-                    let project = picker.workspace.0;
-                    d.child(
-                        div()
-                            .id("promote")
-                            .px_3()
-                            .py_2()
-                            .border_t_1()
-                            .border_color(theme::border())
-                            .text_color(theme::text_muted())
-                            .hover(|s| s.bg(theme::hover()).text_color(theme::text()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_worktree_dialog(project, crate::worktrees::DialogMode::Promote, window, cx)
-                            }))
-                            .cursor_pointer()
-                            .child("↳ Déplacer le travail en cours dans un worktree…"),
-                    )
-                });
+        let panel = popover("branch-picker", &picker.focus, px(440.0))
+            .on_key_down(cx.listener(Self::branch_picker_key_down))
+            .child(search_field(&picker.query, "Chercher ou créer une branche…"))
+            .child(div().p_1().child(list))
+            .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
+            .children(picker.error.clone().map(|e| div().px_3().py_2().text_color(theme::danger()).child(e)))
+            .children(confirm)
+            .when(self.is_direct(picker.workspace), |d| {
+                let project = picker.workspace.0;
+                d.child(
+                    div()
+                        .id("promote")
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .text_color(theme::text_muted())
+                        .hover(|s| s.bg(theme::hover()).text_color(theme::text()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_worktree_dialog(project, crate::worktrees::DialogMode::Promote, window, cx)
+                        }))
+                        .cursor_pointer()
+                        .child(icon(Icon::CornerDownRight, theme::text_faint()))
+                        .child("Déplacer le travail en cours dans un worktree…"),
+                )
+            })
+            .child(
+                popover_footer()
+                    .child(hint("↑↓", "naviguer"))
+                    .child(hint("Entrée", "valider"))
+                    .child(hint("Échap", "fermer")),
+            );
         Some(picker.scroll.track_drag(panel, count).into_any_element())
     }
-}
-
-fn button(id: &'static str, label: &'static str, primary: bool) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .px_3()
-        .py_1()
-        .rounded_sm()
-        .border_1()
-        .border_color(if primary { theme::accent() } else { theme::border() })
-        .text_color(if primary { theme::accent() } else { theme::text() })
-        .hover(|s| s.bg(theme::hover()))
-        .cursor_pointer()
-        .child(label)
 }

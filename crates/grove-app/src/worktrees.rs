@@ -11,6 +11,7 @@ use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::list::{ListScroll, ROW_HEIGHT};
 use crate::marquee::marquee;
 use crate::theme;
+use crate::ui::{ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogMode {
@@ -323,8 +324,8 @@ impl GroveView {
         let items = dialog.items();
         let project = self.state.project(dialog.project).map(|p| p.name.clone()).unwrap_or_default();
         let title = match dialog.mode {
-            DialogMode::Create => format!("Nouvel espace de travail — {project}"),
-            DialogMode::Promote => "Déplacer ce travail dans un worktree".to_owned(),
+            DialogMode::Create => "Nouvel espace de travail",
+            DialogMode::Promote => "Déplacer ce travail dans un worktree",
         };
         let placeholder = match dialog.mode {
             DialogMode::Create => "Nom d'une nouvelle branche, ou branche existante…",
@@ -363,62 +364,61 @@ impl GroveView {
             _ => None,
         };
 
-        let panel = overlay("worktree-dialog", &dialog.focus)
-                .on_key_down(cx.listener(Self::worktree_dialog_key_down))
-                .child(div().px_3().pt_2().text_xs().text_color(theme::text_muted()).child(title))
-                .child(search_line(&dialog.query, placeholder))
-                .child(div().py_1().child(list))
-                .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
-                .children(dialog.error.clone().map(|e| div().px_3().py_2().text_color(theme::danger()).child(e)))
-                .child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child(format!(
-                            "Entrée : terminal · Maj+Entrée : session Claude · dossier {location}{}",
-                            if config.setup.is_empty() { String::new() } else { format!(" · setup : {} commande(s)", config.setup.len()) }
-                        )),
-                );
+        let panel = popover("worktree-dialog", &dialog.focus, px(480.0))
+            .on_key_down(cx.listener(Self::worktree_dialog_key_down))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .pt_3()
+                    .pb_1()
+                    .child(icon(Icon::GitBranch, theme::accent()))
+                    .child(div().text_color(theme::text()).font_weight(gpui::FontWeight::MEDIUM).child(title))
+                    .child(div().text_xs().text_color(theme::text_faint()).child(project)),
+            )
+            .child(search_field(&dialog.query, placeholder))
+            .child(div().p_1().child(list))
+            .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
+            .children(dialog.error.clone().map(|e| div().px_3().py_2().text_color(theme::danger()).child(e)))
+            .child(
+                popover_footer()
+                    .child(hint("Entrée", "terminal"))
+                    .child(hint("Maj+Entrée", "session Claude"))
+                    .child(div().flex_1())
+                    .child(format!(
+                        "{location}{}",
+                        if config.setup.is_empty() { String::new() } else { format!(" · setup : {} commande(s)", config.setup.len()) }
+                    )),
+            );
         Some(dialog.scroll.track_drag(panel, count).into_any_element())
     }
 
     fn worktree_row(&self, index: usize, item: &Item, selected: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
-                let label = match item {
+        let label = match item {
             Item::New { name, base } if base == "HEAD" => format!("Créer « {name} » avec les modifications en cours"),
             Item::New { name, base } => format!("Créer « {name} » depuis « {base} »"),
             Item::Existing(name) => name.clone(),
             Item::Remote(name) => name.clone(),
         };
-        let icon = match item {
-            Item::New { .. } => "+",
-            Item::Existing(_) => "⎇",
-            Item::Remote(_) => "↓",
+        let glyph = match item {
+            Item::New { .. } => icon(Icon::Plus, theme::accent()),
+            Item::Existing(_) => icon(Icon::GitBranch, theme::text_faint()),
+            Item::Remote(_) => icon(Icon::ArrowDown, theme::text_faint()),
         };
-        div()
-            .id(SharedString::from(format!("worktree-item-{index}")))
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
+        list_row(format!("worktree-item-{index}"), selected)
             .h(ROW_HEIGHT)
-            .pr(px(14.0))
-            .cursor_pointer()
-            .when(selected, |d| d.bg(theme::selected()))
-            .hover(|s| s.bg(theme::hover()))
             .on_click(cx.listener({
                 let item = item.clone();
                 move |this, event: &gpui::ClickEvent, window, cx| {
                     this.create_worktree(item.clone(), event.modifiers().shift, window, cx)
                 }
             }))
-            .child(div().w(px(12.0)).text_color(theme::accent()).child(icon))
+            .child(glyph)
             .child(
                 marquee(SharedString::from(format!("worktree-label-{index}")), label)
-                    .when(matches!(item, Item::Remote(_)), |d| d.text_color(theme::text_muted())),
+                    .text_color(if matches!(item, Item::Remote(_)) { theme::text_muted() } else { theme::text() }),
             )
             .into_any_element()
     }
@@ -541,35 +541,81 @@ impl GroveView {
         let delete_label = if dialog.changed > 0 { "Supprimer quand même" } else { "Supprimer le worktree" };
 
         Some(
-            overlay("remove-dialog", &dialog.focus)
+            popover("remove-dialog", &dialog.focus, px(460.0))
                 .on_key_down(cx.listener(Self::remove_dialog_key_down))
-                .p_3()
-                .gap_2()
-                .child(div().text_color(theme::text()).child(format!("Retirer l'espace « {name} » ?")))
-                .child(div().text_xs().text_color(theme::text_muted()).child(dialog.path.display().to_string()))
-                .children(warning.map(|w| div().text_color(theme::waiting()).child(w)))
-                .children(dialog.error.clone().map(|e| div().text_color(theme::danger()).child(e)))
+                .p_4()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap_3()
+                        .child(
+                            div()
+                                .size(px(32.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .bg(theme::danger().opacity(0.12))
+                                .child(icon(Icon::Trash, theme::danger())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_0p5()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_color(theme::text())
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child(format!("Retirer l'espace « {name} » ?")),
+                                )
+                                .child(div().text_xs().text_color(theme::text_faint()).child(dialog.path.display().to_string())),
+                        ),
+                )
+                .children(warning.map(|w| {
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .bg(theme::waiting().opacity(0.08))
+                        .border_1()
+                        .border_color(theme::waiting().opacity(0.25))
+                        .text_xs()
+                        .text_color(theme::waiting())
+                        .child(icon(Icon::Alert, theme::waiting()))
+                        .child(div().flex_1().min_w_0().child(w))
+                }))
+                .children(dialog.error.clone().map(|e| div().text_xs().text_color(theme::danger()).child(e)))
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap_2()
+                        .pt_1()
                         .justify_end()
-                        .child(dialog_button("remove-forget", "Retirer de Grove", false).on_click(
+                        .child(button("remove-forget", "Retirer de Grove", ButtonStyle::Secondary).on_click(
                             cx.listener(|this, _, window, cx| this.remove_workspace(Removal::Forget, window, cx)),
                         ))
-                        .child(dialog_button("remove-delete", delete_label, true).on_click(cx.listener(
+                        .child(button("remove-delete", delete_label, ButtonStyle::Danger).on_click(cx.listener(
                             |this, _, window, cx| this.remove_workspace(Removal::Delete { branch: false }, window, cx),
                         )))
                         .when(dialog.branch.is_some(), |d| {
-                            d.child(dialog_button("remove-delete-branch", "Supprimer worktree et branche", true).on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.remove_workspace(Removal::Delete { branch: true }, window, cx)
-                                }),
-                            ))
+                            d.child(
+                                button("remove-delete-branch", "Supprimer worktree et branche", ButtonStyle::Danger)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.remove_workspace(Removal::Delete { branch: true }, window, cx)
+                                    })),
+                            )
                         }),
                 )
-                .children(dialog.busy.then(|| div().text_color(theme::text_muted()).child("git en cours…")))
+                .children(dialog.busy.then(|| div().text_xs().text_color(theme::text_muted()).child("git en cours…")))
                 .into_any_element(),
         )
     }
@@ -580,22 +626,24 @@ impl GroveView {
         Some(
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap_3()
-                .px_3()
-                .py_1()
-                .bg(theme::panel())
+                .pl_3()
+                .pr_2()
+                .py_1p5()
+                .bg(theme::waiting().opacity(0.07))
                 .border_b_1()
-                .border_color(theme::waiting())
+                .border_color(theme::waiting().opacity(0.3))
                 .text_sm()
-                .child(div().text_color(theme::waiting()).child("⚠"))
-                .child(div().flex_1().child(notice.text.clone()))
+                .child(icon(Icon::Alert, theme::waiting()))
+                .child(div().flex_1().min_w_0().text_color(theme::text()).child(notice.text.clone()))
                 .when(notice.suggest_worktree, |d| {
-                    d.child(dialog_button("notice-worktree", "Créer un worktree", true).on_click(cx.listener(
+                    d.child(button("notice-worktree", "Créer un worktree", ButtonStyle::Primary).on_click(cx.listener(
                         move |this, _, window, cx| this.open_worktree_dialog(key.0, DialogMode::Create, window, cx),
                     )))
                 })
-                .child(crate::sidebar::icon_button("notice-close", "×").on_click(cx.listener(|this, _, _, cx| {
+                .child(icon_button("notice-close", Icon::X).on_click(cx.listener(|this, _, _, cx| {
                     this.notice = None;
                     cx.notify();
                 })))
@@ -654,58 +702,6 @@ fn prepare_worktree(root: &Path, target: &NewWorktree, mode: DialogMode) -> anyh
 fn setup_script(commands: &[String]) -> String {
     let chain = commands.join(" && ");
     format!("{chain}; code=$?; echo; echo \"[setup terminé, code $code]\"; exec \"$SHELL\" -i")
-}
-
-/// Panneau flottant au-dessus du terminal, qui capture clavier et souris.
-fn overlay(id: &'static str, focus: &FocusHandle) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .track_focus(focus)
-        .occlude()
-        .absolute()
-        .top(px(4.0))
-        .left(px(8.0))
-        .w(px(460.0))
-        .max_h(px(460.0))
-        .flex()
-        .flex_col()
-        .rounded_md()
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::panel())
-        .shadow_lg()
-        .text_sm()
-}
-
-fn search_line(query: &str, placeholder: &'static str) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_3()
-        .py_2()
-        .border_b_1()
-        .border_color(theme::border())
-        .child(div().text_color(theme::text_muted()).child("⎇"))
-        .child(if query.is_empty() {
-            div().text_color(theme::text_muted()).child(placeholder)
-        } else {
-            div().flex().child(query.to_owned()).child(div().text_color(theme::accent()).child("▏"))
-        })
-}
-
-fn dialog_button(id: &'static str, label: &'static str, primary: bool) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .px_3()
-        .py_1()
-        .rounded_sm()
-        .border_1()
-        .border_color(if primary { theme::accent() } else { theme::border() })
-        .text_color(if primary { theme::accent() } else { theme::text() })
-        .hover(|s| s.bg(theme::hover()))
-        .cursor_pointer()
-        .child(label)
 }
 
 #[cfg(test)]

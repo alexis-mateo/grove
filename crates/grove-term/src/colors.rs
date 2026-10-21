@@ -17,18 +17,18 @@ const fn rgb(hex: u32) -> Rgb {
 }
 
 impl Default for Palette {
-    /// Thème sombre aux tons de forêt.
+    /// Thème sombre graphite, accordé à l'interface (`grove-app/src/theme.rs`).
     fn default() -> Self {
         Self {
             ansi: [
-                rgb(0x1d2321), rgb(0xe06c62), rgb(0x8fbf6a), rgb(0xd9b562),
-                rgb(0x6fa3c7), rgb(0xb98ad0), rgb(0x67b8a6), rgb(0xc9cfc6),
-                rgb(0x4f5a55), rgb(0xf08a80), rgb(0xa9d685), rgb(0xebcb84),
-                rgb(0x8dbde0), rgb(0xd0a6e3), rgb(0x86d1bf), rgb(0xeef1ea),
+                rgb(0x23252b), rgb(0xef6b6b), rgb(0x5fd394), rgb(0xe8b95c),
+                rgb(0x62a8f0), rgb(0xc08cf0), rgb(0x4fc4c4), rgb(0xc8cbd2),
+                rgb(0x5d616d), rgb(0xff8a8a), rgb(0x84e2ae), rgb(0xf4cf80),
+                rgb(0x8cc0ff), rgb(0xd6aaff), rgb(0x7adada), rgb(0xf2f3f5),
             ],
-            foreground: rgb(0xd8ddd3),
-            background: rgb(0x141917),
-            cursor: rgb(0xa9d685),
+            foreground: rgb(0xe2e4e8),
+            background: rgb(0x0e0f11),
+            cursor: rgb(0x4fd18b),
         }
     }
 }

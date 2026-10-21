@@ -11,6 +11,7 @@ mod sidebar;
 mod tab_bar;
 mod terminal_view;
 mod theme;
+mod ui;
 mod usage;
 mod window_frame;
 mod worktrees;
@@ -38,7 +39,7 @@ fn main() -> Result<()> {
     let paths = Paths::from_env()?;
     let config = Config::load(&paths.config_file())?;
 
-    Application::new().run(move |cx: &mut App| {
+    Application::new().with_assets(ui::Assets).run(move |cx: &mut App| {
         cx.bind_keys(grove_view::key_bindings());
         let bounds = Bounds::centered(None, size(px(1200.0), px(760.0)), cx);
         let window = cx.open_window(

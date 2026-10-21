@@ -16,6 +16,7 @@ use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::usage::{self, Usage};
 use crate::marquee::marquee;
 use crate::theme;
+use crate::ui::{Icon, hint, icon};
 
 pub(crate) struct ClaudeRuntime {
     /// `None` si le socket n'a pas pu être ouvert : les onglets Claude
@@ -299,15 +300,17 @@ impl GroveView {
                     (None, Some(prompt)) => (prompt.clone(), None),
                     (None, None) => ("(sans titre)".to_owned(), None),
                 };
+                let group = SharedString::from(format!("history-row-{id}"));
 
                 div()
-                    .id(SharedString::from(format!("history-row-{id}")))
+                    .id(group.clone())
+                    .group(group.clone())
                     .flex()
                     .items_center()
                     .gap_3()
                     .px_3()
-                    .py_2()
-                    .rounded_md()
+                    .py_2p5()
+                    .rounded_lg()
                     .hover(|s| s.bg(theme::hover()))
                     .cursor_pointer()
                     .on_click(cx.listener({
@@ -315,11 +318,7 @@ impl GroveView {
                         move |this, _, window, cx| this.new_claude_tab(Some(id.clone()), window, cx)
                     }))
                     .child(
-                        div()
-                            .w(px(110.0))
-                            .flex_none()
-                            .text_color(theme::text_muted())
-                            .child(relative_time(session.modified)),
+                        icon(Icon::Claude, theme::text_faint()).group_hover(group, |s| s.text_color(theme::accent())),
                     )
                     .child(
                         div()
@@ -327,6 +326,7 @@ impl GroveView {
                             .min_w_0()
                             .flex()
                             .flex_col()
+                            .gap_0p5()
                             .child(
                                 div().flex().text_color(theme::text()).child(marquee(SharedString::from(format!("history-title-{id}")), title)),
                             )
@@ -334,13 +334,23 @@ impl GroveView {
                                 div()
                                     .flex()
                                     .text_xs()
-                                    .text_color(theme::text_muted())
+                                    .text_color(theme::text_faint())
                                     .child(marquee(SharedString::from(format!("history-prompt-{id}")), s))
                             })),
                     )
-                    .children(session.cost_usd.map(|cost| {
-                        div().flex_none().text_xs().text_color(theme::text_muted()).child(format!("{cost:.2} $"))
-                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .gap_0p5()
+                            .text_xs()
+                            .child(div().text_color(theme::text_muted()).child(relative_time(session.modified)))
+                            .children(
+                                session.cost_usd.map(|cost| div().text_color(theme::text_faint()).child(format!("{cost:.2} $"))),
+                            ),
+                    )
             })
             .collect();
         let status = match &history.sessions {
@@ -356,24 +366,45 @@ impl GroveView {
                 .on_key_down(cx.listener(Self::history_key_down))
                 .size_full()
                 .flex()
-                .flex_col()
-                .p_4()
-                .gap_2()
+                .justify_center()
                 .text_sm()
                 .child(
                     div()
+                        .w_full()
+                        .max_w(px(820.0))
+                        .h_full()
                         .flex()
-                        .justify_between()
-                        .child(div().text_color(theme::text()).child("Sessions Claude de cet espace"))
-                        .child(div().text_color(theme::text_muted()).child("Échap pour fermer")),
-                )
-                .child(
-                    div()
-                        .id("history-list")
-                        .flex_1()
-                        .overflow_y_scroll()
-                        .children(status.map(|text| div().px_3().text_color(theme::text_muted()).child(text)))
-                        .children(rows),
+                        .flex_col()
+                        .gap_3()
+                        .px_6()
+                        .pt_6()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .child(icon(Icon::History, theme::text_muted()))
+                                .child(
+                                    div()
+                                        .text_color(theme::text())
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child("Sessions Claude"),
+                                )
+                                .child(div().text_color(theme::text_faint()).child("de cet espace"))
+                                .child(div().flex_1())
+                                .child(hint("Échap", "fermer").text_xs().text_color(theme::text_faint())),
+                        )
+                        .child(div().h(px(1.0)).mx_3().bg(theme::border()))
+                        .child(
+                            div()
+                                .id("history-list")
+                                .flex_1()
+                                .overflow_y_scroll()
+                                .pb_4()
+                                .children(status.map(|text| div().px_3().py_2().text_color(theme::text_muted()).child(text)))
+                                .children(rows),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -386,15 +417,24 @@ impl GroveView {
         }
         let session = self.claude.sessions.get(&tab)?;
         let m = &session.metrics;
-        let (glyph, color, status) = status_badge(&session.status);
+        let (_, color, status) = status_badge(&session.status);
 
         let row = |label: &'static str, value: String| {
             div()
                 .flex()
-                .flex_col()
-                .gap_0p5()
-                .child(div().text_xs().text_color(theme::text_muted()).child(label))
-                .child(div().child(value))
+                .justify_between()
+                .items_baseline()
+                .gap_3()
+                .child(div().flex_none().text_xs().text_color(theme::text_faint()).child(label))
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_color(theme::text())
+                        .child(value),
+                )
         };
         let dash = || "—".to_owned();
 
@@ -404,31 +444,41 @@ impl GroveView {
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .child(div().text_xs().text_color(theme::text_muted()).child("CONTEXTE"))
+                .gap_2()
                 .child(
                     div()
-                        .h(px(6.0))
-                        .w_full()
-                        .rounded_sm()
-                        .bg(theme::selected())
-                        .child(div().h_full().w(gpui::relative(fill)).rounded_sm().bg(color)),
+                        .flex()
+                        .justify_between()
+                        .child(div().text_xs().text_color(theme::text_faint()).child("Contexte"))
+                        .child(div().text_color(theme::text()).child(format!("{percent:.0} %"))),
                 )
-                .child(div().child(match (m.context_tokens, m.context_size) {
-                    (Some(t), Some(s)) => format!("{percent:.0} % · {}k / {}k", t / 1000, s / 1000),
-                    _ => format!("{percent:.0} %"),
-                }))
+                .child(
+                    div()
+                        .h(px(4.0))
+                        .w_full()
+                        .rounded_full()
+                        .bg(theme::selected())
+                        .child(div().h_full().w(gpui::relative(fill)).rounded_full().bg(color)),
+                )
+                .children(match (m.context_tokens, m.context_size) {
+                    (Some(t), Some(s)) => Some(
+                        div().text_xs().text_color(theme::text_faint()).child(format!("{}k / {}k tokens", t / 1000, s / 1000)),
+                    ),
+                    _ => None,
+                })
         });
+
+        let section = || div().flex().flex_col().gap_2p5().pt_4().border_t_1().border_color(theme::border());
 
         Some(
             div()
-                .w(px(240.0))
+                .w(px(260.0))
                 .h_full()
                 .flex_none()
                 .flex()
                 .flex_col()
                 .gap_4()
-                .p_3()
+                .p_4()
                 .bg(theme::panel())
                 .border_l_1()
                 .border_color(theme::border())
@@ -436,31 +486,34 @@ impl GroveView {
                 .child(
                     div()
                         .flex()
-                        .gap_2()
                         .items_center()
-                        .child(div().text_color(color).child(glyph))
-                        .child(status),
+                        .gap_2()
+                        .child(icon(Icon::Claude, color))
+                        .child(div().flex_1().min_w_0().text_color(theme::text()).child(status)),
                 )
-                .child(row(
-                    "MODÈLE",
-                    match (&m.model, &m.effort) {
-                        (Some(model), Some(effort)) => format!("{model} · effort {effort}"),
-                        (Some(model), None) => model.clone(),
-                        (None, _) => dash(),
-                    },
-                ))
-                .child(row("COÛT", m.cost_usd.map(|c| format!("{c:.2} $")).unwrap_or_else(dash)))
-                .children(gauge)
-                .when(m.lines_added.is_some() || m.lines_removed.is_some(), |d| {
-                    d.child(row(
-                        "LIGNES",
-                        format!("+{} −{}", m.lines_added.unwrap_or(0), m.lines_removed.unwrap_or(0)),
-                    ))
-                })
-                .child(row(
-                    "SESSION",
-                    session.session_id.as_deref().map(|id| id[..id.len().min(8)].to_owned()).unwrap_or_else(dash),
-                ))
+                .child(
+                    section()
+                        .child(row(
+                            "Modèle",
+                            match (&m.model, &m.effort) {
+                                (Some(model), Some(effort)) => format!("{model} · {effort}"),
+                                (Some(model), None) => model.clone(),
+                                (None, _) => dash(),
+                            },
+                        ))
+                        .child(row("Coût", m.cost_usd.map(|c| format!("{c:.2} $")).unwrap_or_else(dash)))
+                        .when(m.lines_added.is_some() || m.lines_removed.is_some(), |d| {
+                            d.child(row(
+                                "Lignes",
+                                format!("+{} −{}", m.lines_added.unwrap_or(0), m.lines_removed.unwrap_or(0)),
+                            ))
+                        })
+                        .child(row(
+                            "Session",
+                            session.session_id.as_deref().map(|id| id[..id.len().min(8)].to_owned()).unwrap_or_else(dash),
+                        )),
+                )
+                .children(gauge.map(|gauge| section().child(gauge)))
                 .into_any_element(),
         )
     }

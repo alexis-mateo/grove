@@ -12,6 +12,8 @@ use crate::model::{Project, Workspace};
 pub struct State {
     pub projects: Vec<Project>,
     pub active_workspace: Option<(ProjectId, WorkspaceId)>,
+    /// Largeur de la sidebar en pixels, si l'utilisateur l'a redimensionnée.
+    pub sidebar_width: Option<f32>,
 }
 
 impl State {

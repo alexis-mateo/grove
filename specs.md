@@ -56,7 +56,7 @@ Pourquoi ce nom :
 #### Pistes d'identité visuelle et de vocabulaire
 
 - **Icône** : quelques arbres stylisés, ou un arbre dont les branches forment un graphe git.
-- **Palette** : verts (forêt, mousse), bruns (écorce), avec une couleur d'accent pour les sessions qui attendent une réponse.
+- **Palette** : graphite neutre (fonds sombres à peine bleutés), un accent émeraude pour l'état actif, ambre pour les sessions qui attendent une réponse, rouge pour les limites et actions destructives (`grove-app/src/theme.rs`).
 - **Vocabulaire possible dans l'UI** (à utiliser avec parcimonie pour rester clair) :
   - « Planter » un worktree : créer un espace de travail ;
   - « Élaguer » : nettoyer les worktrees dont la PR est mergée ;
@@ -207,12 +207,20 @@ enum ClaudeStatus {
 
 ```
 ▾ rgsupv-dashboard
-    ● main (direct)          2 onglets
-    ◐ feat-1234-tree         claude attend ta réponse
-    ○ fix-987-login          terminé
-▾ notes-perso (pas git)
-    ● dossier                1 onglet
+    ⌂ main                            2
+    ⎇ feat-1234-tree         ● attend
+    ✳ fix-987-login          ● en cours
+▾ notes-perso                   pas git
+    ▭ dossier
 ```
+
+Icône de tête : maison pour le checkout principal (direct), branche pour un
+worktree, ✳ pour un worktree créé par Claude Code, dossier hors git ; une
+infobulle sur l'icône rappelle le type et le chemin. À droite : l'état Claude
+agrégé (pastille ambre « attend », verte « en cours »), sinon le nombre
+d'onglets s'il y en a plusieurs. La sidebar se redimensionne par son bord
+droit (double-clic : largeur par défaut) ; sa largeur est conservée dans
+`state.json`.
 
 ---
 
