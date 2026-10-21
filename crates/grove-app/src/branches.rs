@@ -292,11 +292,10 @@ impl GroveView {
                     (false, true) => icon(Icon::ArrowDown, theme::text_faint()),
                     (false, false) => icon(Icon::GitBranch, theme::text_faint()),
                 };
-                row.child(glyph)
-                    .child(
-                        marquee(SharedString::from(format!("branch-name-{index}")), branch.name.clone())
-                            .text_color(if branch.remote { theme::text_muted() } else { theme::text() }),
-                    )
+                // La couleur va sur la ligne : `marquee` peint avec le style de son parent.
+                row.text_color(if branch.remote { theme::text_muted() } else { theme::text() })
+                    .child(glyph)
+                    .child(marquee(SharedString::from(format!("branch-name-{index}")), branch.name.clone()))
                     // Branche suivie : seulement si elle apporte une information (pas `origin/<même nom>`).
                     .children(branch.upstream.clone().filter(|u| *u != format!("origin/{}", branch.name)).map(|u| {
                         div()
@@ -327,11 +326,9 @@ impl GroveView {
                     .into_any_element()
             }
             Item::Create(name) => row
+                .text_color(theme::text())
                 .child(icon(Icon::Plus, theme::accent()))
-                .child(
-                    marquee("branch-create", format!("Créer « {name} » depuis la branche courante"))
-                        .text_color(theme::text()),
-                )
+                .child(marquee("branch-create", format!("Créer « {name} » depuis la branche courante")))
                 .into_any_element(),
         }
     }

@@ -92,6 +92,8 @@ pub struct GroveView {
     pub(crate) git: HashMap<WorkspaceId, GitState>,
     pub(crate) sidebar_visible: bool,
     pub(crate) sidebar_width: Pixels,
+    /// Écriture différée de la largeur pendant un redimensionnement.
+    pub(crate) sidebar_save: Option<Task<()>>,
     pub(crate) rename: Option<Rename>,
     pub(crate) claude: ClaudeRuntime,
     pub(crate) branch_picker: Option<BranchPicker>,
@@ -171,6 +173,7 @@ impl GroveView {
             git: HashMap::new(),
             sidebar_visible: true,
             sidebar_width,
+            sidebar_save: None,
             rename: None,
             focus_handle: cx.focus_handle(),
             git_events,
@@ -628,7 +631,6 @@ impl Render for GroveView {
                 cx.notify();
             }))
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedSidebar>, _, cx| this.resize_sidebar(event, cx)))
-            .on_drop(cx.listener(|this, _: &DraggedSidebar, _, _| this.finish_sidebar_resize()))
             .size_full()
             .relative()
             .flex()

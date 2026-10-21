@@ -415,11 +415,10 @@ impl GroveView {
                     this.create_worktree(item.clone(), event.modifiers().shift, window, cx)
                 }
             }))
+            // La couleur va sur la ligne : `marquee` peint avec le style de son parent.
+            .text_color(if matches!(item, Item::Remote(_)) { theme::text_muted() } else { theme::text() })
             .child(glyph)
-            .child(
-                marquee(SharedString::from(format!("worktree-label-{index}")), label)
-                    .text_color(if matches!(item, Item::Remote(_)) { theme::text_muted() } else { theme::text() }),
-            )
+            .child(marquee(SharedString::from(format!("worktree-label-{index}")), label))
             .into_any_element()
     }
 

@@ -16,6 +16,7 @@ use grove_claude::{RateLimits, RateWindow};
 use serde::{Deserialize, Serialize};
 
 use crate::grove_view::GroveView;
+use crate::marquee::marquee;
 use crate::theme;
 
 const FIVE_HOURS: i64 = 5 * 3600;
@@ -274,21 +275,22 @@ impl GroveView {
                     .flex()
                     .flex_col()
                     .text_xs()
-                    .child(div().text_color(theme::text()).child(if five_expired {
+                    .child(line("usage-five-title", if five_expired {
                         "Limite 5 h · réinitialisée".to_owned()
                     } else {
                         format!("Limite 5 h · {:.0} %", five.used_percent)
-                    }))
-                    .child(div().text_color(theme::text_faint()).child(match five.resets_at {
+                    }).text_color(theme::text()))
+                    .child(line("usage-five-reset", match five.resets_at {
                         _ if five_expired => "nouvelle fenêtre".to_owned(),
                         Some(at) => format!("reset dans {}", countdown(at)),
                         None => "reset inconnu".to_owned(),
-                    })),
+                    }).text_color(theme::text_faint())),
             )
             .children(limits.seven_day.filter(|w| !expired(w)).map(|week| {
                 div()
                     .flex_none()
                     .text_xs()
+                    .whitespace_nowrap()
                     .text_color(if week.used_percent >= 70.0 { level_color(week.used_percent) } else { theme::text_faint() })
                     .child(format!("sem. {:.0} %", week.used_percent))
             }));
@@ -303,9 +305,9 @@ impl GroveView {
                     .child(
                         div()
                             .flex()
-                            .justify_between()
-                            .child(div().text_color(theme::text_muted()).child(label))
-                            .child(div().text_color(theme::text()).child(if is_expired {
+                            .gap_2()
+                            .child(line(SharedString::from(format!("usage-label-{label}")), label).flex_1().text_color(theme::text_muted()))
+                            .child(div().flex_none().whitespace_nowrap().text_color(theme::text()).child(if is_expired {
                                 "réinitialisée".to_owned()
                             } else {
                                 format!("{:.0} %", window.used_percent)
@@ -313,9 +315,8 @@ impl GroveView {
                     )
                     .child(if is_expired { bar(0.0, None) } else { bar(window.used_percent, elapsed_fraction(&window, length)) })
                     .children(window.resets_at.filter(|_| !is_expired).map(|at| {
-                        div()
+                        line(SharedString::from(format!("usage-reset-{label}")), format!("reset {} (dans {})", reset_date(at), countdown(at)))
                             .text_color(theme::text_faint())
-                            .child(format!("reset {} (dans {})", reset_date(at), countdown(at)))
                     }))
             };
             let updated: SharedString = match self.claude.usage.received_at.and_then(|t| t.elapsed().ok()) {
@@ -337,28 +338,36 @@ impl GroveView {
                 .children(limits.seven_day_opus.map(|w| window_row("Semaine, Opus", w, SEVEN_DAYS)))
                 .children(limits.seven_day_sonnet.map(|w| window_row("Semaine, Sonnet", w, SEVEN_DAYS)))
                 .child(
-                    // Passe à la ligne quand « mis à jour il y a … » ne tient plus à côté.
                     div()
                         .flex()
-                        .flex_wrap()
-                        .justify_between()
-                        .gap_x_2()
+                        .flex_col()
                         .text_color(theme::text_faint())
-                        .child(div().flex_none().child("│ repère : temps écoulé"))
-                        .child(div().flex_none().child(updated)),
+                        .child(line("usage-legend", "│ repère : temps écoulé"))
+                        .child(line("usage-updated", updated)),
                 )
         });
 
         Some(
             div()
                 .flex_none()
+                .flex()
+                .flex_col()
+                .gap_1()
                 .p_2()
                 .border_t_1()
                 .border_color(theme::border())
-                .child(div().flex().flex_col().gap_1().children(detail).child(summary))
+                .children(detail)
+                .child(summary)
                 .into_any_element(),
         )
     }
+}
+
+/// Une ligne de texte, tronquée avec « … » (et lisible en entier au survol)
+/// plutôt que renvoyée à la ligne : la hauteur de la carte ne dépend ainsi pas
+/// de la largeur de la sidebar.
+fn line(id: impl Into<gpui::ElementId>, text: impl Into<SharedString>) -> gpui::Div {
+    div().flex().w_full().min_w_0().child(marquee(id, text))
 }
 
 #[cfg(test)]

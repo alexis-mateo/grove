@@ -18,6 +18,8 @@ const MIN_SIDEBAR_WIDTH: Pixels = px(180.0);
 const MAX_SIDEBAR_WIDTH: Pixels = px(520.0);
 /// Largeur de la poignée de redimensionnement, à cheval sur le bord.
 const HANDLE_WIDTH: Pixels = px(6.0);
+/// Délai entre le dernier mouvement de la poignée et l'écriture de `state.json`.
+const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Bord de la sidebar en cours de glisser.
 #[derive(Clone)]
@@ -139,17 +141,19 @@ impl GroveView {
         let width = (event.event.position.x - event.bounds.left()).clamp(MIN_SIDEBAR_WIDTH, max).round();
         if width != self.sidebar_width {
             self.sidebar_width = width;
+            self.state.sidebar_width = Some(f32::from(width));
+            self.save_sidebar_width_soon(cx);
             cx.notify();
         }
     }
 
-    /// Fin du glisser : on retient la largeur.
-    pub(crate) fn finish_sidebar_resize(&mut self) {
-        let width = f32::from(self.sidebar_width);
-        if self.state.sidebar_width != Some(width) {
-            self.state.sidebar_width = Some(width);
-            self.save();
-        }
+    /// Enregistre la largeur peu après le dernier mouvement : sans attendre le
+    /// relâchement, qui n'arrive pas si le pointeur sort de la fenêtre.
+    fn save_sidebar_width_soon(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_save = Some(cx.spawn(async move |this, cx| {
+            gpui::Timer::after(SAVE_DELAY).await;
+            let _ = this.update(cx, |this, _| this.save());
+        }));
     }
 
     fn render_project(&self, project: &Project, cx: &mut Context<Self>) -> gpui::AnyElement {
