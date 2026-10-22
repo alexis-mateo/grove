@@ -148,6 +148,7 @@ impl Terminal {
             }
             *current = window_size;
         }
+        self.graphics.lock().unwrap().set_cell_size(cell_width as u32, cell_height as u32);
         self.term.lock().resize(size);
         let _ = self.sender.send(Msg::Resize(window_size));
     }

@@ -261,11 +261,31 @@ pub(crate) struct Graphics {
     images: HashMap<u32, Arc<Image>>,
     chunked: Option<Chunked>,
     next_generation: u64,
+    /// Taille d'une cellule en pixels (0 tant qu'inconnue) : les images plus
+    /// grandes que leur placement y sont réduites.
+    cell_size: (u32, u32),
 }
 
 impl Graphics {
     pub fn image(&self, id: u32) -> Option<Arc<Image>> {
         self.images.get(&id).cloned()
+    }
+
+    /// Les images reçues avant (le programme démarre avant le premier rendu)
+    /// sont réduites à leur tour.
+    pub fn set_cell_size(&mut self, width: u32, height: u32) {
+        if self.cell_size == (width, height) {
+            return;
+        }
+        self.cell_size = (width, height);
+        let ids: Vec<u32> = self.images.keys().copied().collect();
+        for id in ids {
+            let Some(current) = self.images.remove(&id) else { continue };
+            let mut image =
+                Arc::try_unwrap(current).unwrap_or_else(|shared| Image { rgba: shared.rgba.clone(), ..*shared });
+            self.shrink(&mut image);
+            self.images.insert(id, Arc::new(image));
+        }
     }
 
     /// Exécute une commande (le texte entre `ESC _G` et `ESC \`) ; renvoie la
@@ -358,8 +378,35 @@ impl Graphics {
         if control.number(b'U') == 1 {
             image.columns = control.number(b'c');
             image.rows = control.number(b'r');
+            self.shrink(&mut image);
         }
         self.images.insert(image.id, Arc::new(image));
+    }
+
+    /// Réduit l'image au double de la zone de son placement : une capture 4K
+    /// affichée en vignette ne garde pas ses 33 Mo de pixels. Le facteur 2
+    /// laisse de la marge pour un écran HiDPI ou une police agrandie.
+    fn shrink(&mut self, image: &mut Image) {
+        let (cell_width, cell_height) = self.cell_size;
+        let max_width = image.columns.saturating_mul(cell_width).saturating_mul(2);
+        let max_height = image.rows.saturating_mul(cell_height).saturating_mul(2);
+        if max_width == 0 || max_height == 0 || (image.width <= max_width && image.height <= max_height) {
+            return;
+        }
+        let scale = (max_width as f64 / image.width as f64).min(max_height as f64 / image.height as f64);
+        let width = ((image.width as f64 * scale).round() as u32).max(1);
+        let height = ((image.height as f64 * scale).round() as u32).max(1);
+        // Juste décodée, l'image n'a qu'un propriétaire : pas de copie.
+        let rgba = Arc::try_unwrap(std::mem::take(&mut image.rgba)).unwrap_or_else(|shared| (*shared).clone());
+        let Some(full) = image::RgbaImage::from_raw(image.width, image.height, rgba) else {
+            return;
+        };
+        let small = image::imageops::thumbnail(&full, width, height);
+        image.width = width;
+        image.height = height;
+        image.rgba = Arc::new(small.into_raw());
+        image.generation = self.next_generation;
+        self.next_generation += 1;
     }
 
     /// Libère les images les plus anciennes au-delà de [`MAX_STORED`].
@@ -543,6 +590,27 @@ mod tests {
 
         graphics.command(b"a=d,d=I,i=7,q=2");
         assert!(graphics.image(7).is_none());
+    }
+
+    #[test]
+    fn large_images_are_shrunk_to_their_placement() {
+        let pixels = vec![200; 1000 * 500 * 4];
+        let command = |id: u32| rgba_command(&format!("a=T,U=1,q=2,f=32,s=1000,v=500,i={id},c=4,r=2"), &pixels);
+        let mut graphics = Graphics::default();
+        graphics.command(&command(8));
+        let image = graphics.image(8).unwrap();
+        assert_eq!((image.width, image.height), (1000, 500), "taille de cellule inconnue : rien à réduire");
+
+        // Zone 4×2 cellules de 10×20 px = 40×40 px, au double : 80×80 ; proportions gardées.
+        graphics.set_cell_size(10, 20);
+        let image = graphics.image(8).unwrap();
+        assert_eq!((image.width, image.height), (80, 40), "réduite quand la taille des cellules arrive");
+        assert_eq!(image.rgba.len(), 80 * 40 * 4);
+        assert_eq!(&image.rgba[..4], &[200, 200, 200, 200]);
+
+        graphics.command(&command(9));
+        let image = graphics.image(9).unwrap();
+        assert_eq!((image.width, image.height), (80, 40), "réduite dès la réception");
     }
 
     #[test]
