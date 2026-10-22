@@ -29,6 +29,18 @@ cargo run -p grove-app [-- <dossier>]   # restaure la session ; <dossier> est aj
 cargo test --workspace
 ```
 
+## Installer
+
+```
+./scripts/install.sh               # compile en release et installe (ou met à jour)
+./scripts/install.sh --uninstall
+```
+
+Le binaire va dans `~/.local/bin/grove`, l'icône et le lanceur (`grove.desktop`,
+associé à la fenêtre par son `app_id`) dans `~/.local/share`. Pour mettre à jour :
+`git pull` puis relancer le script, puis redémarrer Grove ; une instance ouverte
+garde l'ancien binaire jusqu'à sa fermeture.
+
 ## Raccourcis
 
 | Touche | Action |

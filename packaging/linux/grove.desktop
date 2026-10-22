@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Grove
+GenericName=Terminal
+Comment=Terminal multi-projets orienté Claude Code
+Exec=@BIN@
+Icon=grove
+Terminal=false
+Categories=Development;
+Keywords=terminal;claude;git;worktree;
+StartupNotify=true
+StartupWMClass=grove
