@@ -12,6 +12,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 env_logger.workspace = true
 gpui.workspace = true
+image.workspace = true
 grove-core.workspace = true
 grove-term.workspace = true
 log.workspace = true

@@ -27,6 +27,12 @@ tempfile = "3"
 libc = "0.2"
 
 alacritty_terminal = "0.26"
+# Même version que celle d'alacritty_terminal : ses traits de PTY l'exposent.
+polling = "3.8"
+# Protocole graphique de kitty ; déjà tirés par GPUI.
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+flate2 = "1"
 portable-pty = "0.9"
 gpui = "0.2.2"
 gix = { version = "0.89", default-features = false, features = ["sha1"] }

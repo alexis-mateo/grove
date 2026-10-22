@@ -3223,6 +3223,7 @@ dependencies = [
  "grove-core",
  "grove-git",
  "grove-term",
+ "image",
  "jiff",
  "log",
  "notify-rust",
@@ -3276,7 +3277,11 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "base64 0.22.1",
+ "flate2",
+ "image",
  "log",
+ "polling",
 ]
 
 [[package]]

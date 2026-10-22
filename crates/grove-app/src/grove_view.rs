@@ -448,6 +448,9 @@ impl GroveView {
         let mut options = TerminalOptions::new(self.config.shell());
         options.cwd = Some(cwd);
         options.scrollback = self.config.terminal.scrollback;
+        // Claude Code n'affiche les images (protocole de kitty) que dans kitty et
+        // Ghostty, reconnus par leur nom ; Grove les gère aussi, on le lui dit.
+        options.env.insert("CLAUDE_CODE_FORCE_TERMINAL_IMAGES".into(), "1".into());
         options
     }
 

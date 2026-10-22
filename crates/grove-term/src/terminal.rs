@@ -15,7 +15,9 @@ use alacritty_terminal::tty;
 use anyhow::{Context, Result};
 
 use crate::colors::Palette;
+use crate::graphics::{self, Graphics, Image, Placeholder};
 use crate::links::{self, Link};
+use crate::pty::GraphicsPty;
 
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::term::cell::Flags as CellFlags;
@@ -65,6 +67,8 @@ pub struct Terminal {
     palette: Palette,
     /// Compilée une fois : la construction des automates coûte plus que la recherche.
     url_regex: Mutex<RegexSearch>,
+    /// Images du protocole graphique de kitty, reçues par le thread d'E/S.
+    graphics: Arc<Mutex<Graphics>>,
 }
 
 impl Terminal {
@@ -92,6 +96,8 @@ impl Terminal {
         };
         let config = term::Config { scrolling_history: options.scrollback, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, listener.clone())));
+        let graphics = Arc::new(Mutex::new(Graphics::default()));
+        let pty = GraphicsPty::new(pty, graphics.clone(), listener.sender.clone()).context("création du PTY")?;
 
         let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, true, false)
             .context("démarrage de la boucle d'E/S du terminal")?;
@@ -105,6 +111,7 @@ impl Terminal {
             window_size: listener.window_size,
             palette: Palette::default(),
             url_regex: Mutex::new(links::url_regex()),
+            graphics,
         })
     }
 
@@ -182,11 +189,21 @@ impl Terminal {
         let lines = term.screen_lines();
 
         let mut cells = Vec::with_capacity(columns * lines);
+        // Placeholder de la cellule de gauche : ce qui manque à une cellule d'image s'en déduit.
+        let mut left: Option<(i32, Placeholder)> = None;
         for indexed in content.display_iter {
             let cell = indexed.cell;
             if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                 continue;
             }
+            let line = indexed.point.line.0;
+            let placeholder = (cell.c == graphics::PLACEHOLDER)
+                .then(|| {
+                    let left = left.filter(|(row, _)| *row == line).map(|(_, p)| p);
+                    graphics::placeholder(cell.fg, cell.zerowidth().unwrap_or_default(), left)
+                })
+                .flatten();
+            left = placeholder.map(|p| (line, p));
             let mut fg = self.palette.resolve(cell.fg, content.colors, cell.flags);
             let mut bg = self.palette.resolve(cell.bg, content.colors, cell.flags - Flags::BOLD - Flags::DIM);
             if cell.flags.contains(Flags::INVERSE) {
@@ -205,7 +222,20 @@ impl Terminal {
                 bg,
                 flags: cell.flags,
                 selected,
+                placeholder,
             });
+        }
+
+        let mut images = HashMap::new();
+        {
+            let graphics = self.graphics.lock().unwrap();
+            for id in cells.iter().filter_map(|c| c.placeholder).map(|p| p.image) {
+                if let std::collections::hash_map::Entry::Vacant(entry) = images.entry(id)
+                    && let Some(image) = graphics.image(id)
+                {
+                    entry.insert(image);
+                }
+            }
         }
 
         let cursor = content.cursor;
@@ -222,6 +252,7 @@ impl Terminal {
                 .unwrap_or(self.palette.background),
             cursor_color: self.palette.cursor,
             mode: content.mode,
+            images,
         }
     }
 }
@@ -244,6 +275,8 @@ pub struct RenderCell {
     pub bg: Rgb,
     pub flags: Flags,
     pub selected: bool,
+    /// Cellule d'image (caractère U+10EEEE du protocole graphique de kitty).
+    pub placeholder: Option<Placeholder>,
 }
 
 pub struct Snapshot {
@@ -257,6 +290,8 @@ pub struct Snapshot {
     pub background: Rgb,
     pub cursor_color: Rgb,
     pub mode: TermMode,
+    /// Images dont des cellules sont visibles, par identifiant.
+    pub images: HashMap<u32, Arc<Image>>,
 }
 
 impl Snapshot {
@@ -403,6 +438,32 @@ mod tests {
         assert_eq!(hyperlink.uri, "https://example.com/x");
         assert_eq!((hyperlink.start, hyperlink.end), ((1, 0), (1, 3)));
         assert_eq!(terminal.link_at(1, 5), None);
+    }
+
+    #[test]
+    fn kitty_graphics_query_and_placeholders() {
+        // Requête de détection, réponse relue par le programme ; puis une image
+        // 1×1 (id 42) et deux cellules U+10EEEE, ligne 0, colonnes 0 et 1.
+        let script = concat!(
+            r"stty raw -echo; printf '\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\'; ",
+            r#"r=$(dd bs=1 count=12 2>/dev/null); printf '%s\n' "$r" | tr '\033' E; "#,
+            r"printf '\033_Ga=T,U=1,q=2,f=32,s=1,v=1,i=42,c=2,r=1;/wAA/w==\033\\'; ",
+            r"printf '\033[38;2;0;0;42m\364\216\273\256\314\205\314\205\364\216\273\256\033[0m fin'; sleep 5",
+        );
+        let mut options = TerminalOptions::new("/bin/sh");
+        options.args = vec!["-c".into(), script.into()];
+        let terminal = Terminal::spawn(options, |_| {}).unwrap();
+
+        let snapshot = wait_for(&terminal, |s| (0..s.lines).any(|r| s.line_text(r).contains("fin")));
+        assert!(snapshot.line_text(0).contains("E_Gi=31;OKE\\"), "réponse : {:?}", snapshot.line_text(0));
+        let cells: Vec<_> = snapshot.cells.iter().filter_map(|c| c.placeholder).collect();
+        assert_eq!(cells, [
+            Placeholder { image: 42, row: 0, column: 0 },
+            Placeholder { image: 42, row: 0, column: 1 },
+        ]);
+        let image = &snapshot.images[&42];
+        assert_eq!((image.width, image.height, image.columns, image.rows), (1, 1, 2, 1));
+        assert_eq!(*image.rgba, [255, 0, 0, 255]);
     }
 
     #[test]

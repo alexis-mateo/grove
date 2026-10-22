@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use grove_term::{
     TerminalOptions,
 };
 
+use crate::images::ImageCache;
 use crate::mouse::{self, Action};
 use crate::{builtin_glyphs, fonts, keys};
 
@@ -42,6 +43,8 @@ pub struct TerminalView {
     hovered_link: Option<Link>,
     /// Texte en cours de composition (touche morte, méthode de saisie), affiché au curseur.
     marked_text: Option<String>,
+    /// Textures des images du protocole graphique de kitty.
+    images: Rc<RefCell<ImageCache>>,
     _events: Task<()>,
 }
 
@@ -112,6 +115,7 @@ impl TerminalView {
             mouse_position: None,
             hovered_link: None,
             marked_text: None,
+            images: Rc::default(),
             _events: events,
         }
     }
@@ -314,6 +318,7 @@ impl Render for TerminalView {
             foreground: terminal.palette().foreground,
         };
         let link_hint = self.hovered_link.as_ref().map(|link| SharedString::from(link.uri.clone()));
+        let images = self.images.clone();
 
         let exited = self.exited.map(|code| match code {
             Some(code) => format!("[processus terminé, code {code}]"),
@@ -370,7 +375,8 @@ impl Render for TerminalView {
                         snapshot
                     },
                     move |bounds, snapshot, window, cx| {
-                        paint_grid(bounds, &snapshot, &metrics, &font, &overlay, window, cx);
+                        let images = &mut images.borrow_mut();
+                        paint_grid(bounds, &snapshot, &metrics, &font, &overlay, images, window, cx);
                         // Texte composé (accents, méthode de saisie) : reçu par `EntityInputHandler`.
                         window.handle_input(&focus_handle, ElementInputHandler::new(bounds, view), cx);
                     },
@@ -491,12 +497,14 @@ struct Metrics {
     font_size: Pixels,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_grid(
     bounds: Bounds<Pixels>,
     snapshot: &Snapshot,
     metrics: &Metrics,
     font: &Font,
     overlay: &Overlay,
+    images: &mut ImageCache,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -567,6 +575,9 @@ fn paint_grid(
         }
         cell.c = ' ';
     }
+
+    // Images (protocole graphique de kitty), retirées du texte elles aussi.
+    images.paint(&mut cells, &snapshot.images, origin, size(metrics.cell_width, metrics.line_height), window);
 
     // 3. Texte : un lot par suite de cellules de même style. Les caractères larges
     // et les cellules avec caractères combinants forment leur propre lot pour

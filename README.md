@@ -72,6 +72,14 @@ Lettres accentuées et touches mortes (`^` puis `e`…) : le texte composé par 
 méthode de saisie (IBus, XIM, compose) arrive dans le terminal, la vue native
 et les champs de saisie ; la composition en cours s'affiche soulignée au curseur.
 
+Images : protocole graphique de kitty, en placements virtuels (caractères
+U+10EEEE, le mode de Claude Code et de `kitten icat --unicode-placeholder`).
+Images PNG ou pixels bruts, transmises en ligne, par fichier ou par mémoire
+partagée. Les placements classiques (image posée au curseur) ne sont pas
+affichés. Claude Code n'active les images que pour kitty et Ghostty : Grove
+lance ses PTY avec `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`, ce qui affiche par
+exemple les vignettes du plugin `claude-image-view`.
+
 Champs de saisie (recherche de branche, nouvel espace, renommage) : `Ctrl+A`
 sélectionne tout, `Ctrl+C` / `Ctrl+X` copient / coupent (tout le texte sans
 sélection), `Ctrl+V` colle, `Ctrl+Retour arrière` efface le dernier segment.

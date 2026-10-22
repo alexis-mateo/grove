@@ -3,6 +3,7 @@ mod builtin_glyphs;
 mod claude;
 mod fonts;
 mod grove_view;
+mod images;
 mod keys;
 mod list;
 mod markdown;
