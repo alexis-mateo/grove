@@ -25,11 +25,13 @@ pub struct ClaudeConfig {
     /// d'Anthropic avec le jeton de Claude Code, toutes les 3 min. Hors des
     /// points d'intégration officiels : désactivé par défaut (specs §8.5).
     pub usage_api: bool,
+    /// Vue des nouveaux onglets Claude : `terminal` (TUI officiel) ou `native`.
+    pub view: crate::ClaudeView,
 }
 
 impl Default for ClaudeConfig {
     fn default() -> Self {
-        Self { command: "claude".into(), notifications: true, usage_api: false }
+        Self { command: "claude".into(), notifications: true, usage_api: false, view: crate::ClaudeView::Terminal }
     }
 }
 

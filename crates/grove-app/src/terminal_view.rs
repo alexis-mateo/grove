@@ -1,17 +1,19 @@
 use std::cell::Cell;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Result;
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla,
-    KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    Task, TextRun, UnderlineStyle, Window, canvas, div, fill, font, point, prelude::*, px, size,
+    App, AppContext, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    Font, FontStyle, FontWeight, Hsla, KeyDownEvent, Modifiers, ModifiersChangedEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent,
+    SharedString, StrikethroughStyle, Task, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, fill,
+    font, point, prelude::*, px, size,
 };
 use grove_core::Config;
 use grove_term::{
-    CellFlags, CursorShape, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
+    CellFlags, CursorShape, Link, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
     TerminalOptions,
 };
 
@@ -34,6 +36,12 @@ pub struct TerminalView {
     layout: Rc<Cell<GridLayout>>,
     /// Dernière cellule signalée en mouvement, pour ne pas répéter le même report.
     last_motion: Option<(usize, usize)>,
+    /// Dernière position de la souris sur le terminal (survol des liens quand Ctrl change).
+    mouse_position: Option<Point<Pixels>>,
+    /// Lien sous la souris, Ctrl enfoncé : souligné, ouvert au clic.
+    hovered_link: Option<Link>,
+    /// Texte en cours de composition (touche morte, méthode de saisie), affiché au curseur.
+    marked_text: Option<String>,
     _events: Task<()>,
 }
 
@@ -44,6 +52,8 @@ struct GridLayout {
     line_height: Pixels,
     columns: usize,
     lines: usize,
+    /// Curseur au dernier rendu : position de la fenêtre de la méthode de saisie.
+    cursor: Option<(usize, usize)>,
 }
 
 /// Émis quand le processus du terminal s'est terminé.
@@ -99,6 +109,9 @@ impl TerminalView {
                 ..Default::default()
             })),
             last_motion: None,
+            mouse_position: None,
+            hovered_link: None,
+            marked_text: None,
             _events: events,
         }
     }
@@ -206,6 +219,15 @@ impl TerminalView {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
+        // Ctrl+clic sur un lien : prioritaire sur le reporting souris du programme.
+        if event.button == MouseButton::Left && event.modifiers.control {
+            let (column, row) = self.cell_at(event.position);
+            if let Some(link) = self.terminal.link_at(row, column) {
+                cx.open_url(&link.uri);
+                cx.stop_propagation();
+                return;
+            }
+        }
         if self.reports_mouse(&event.modifiers) {
             self.report_button(event.button, Action::Press, event.position, &event.modifiers);
             cx.stop_propagation();
@@ -219,7 +241,24 @@ impl TerminalView {
         }
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, _: &mut Context<Self>) {
+    /// Recalcule le lien survolé : seulement Ctrl enfoncé, comme dans VS Code.
+    fn update_hovered_link(&mut self, modifiers: &Modifiers, cx: &mut Context<Self>) {
+        let link = match self.mouse_position {
+            Some(position) if modifiers.control => {
+                let (column, row) = self.cell_at(position);
+                self.terminal.link_at(row, column)
+            }
+            _ => None,
+        };
+        if link != self.hovered_link {
+            self.hovered_link = link;
+            cx.notify();
+        }
+    }
+
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.mouse_position = Some(event.position);
+        self.update_hovered_link(&event.modifiers, cx);
         let mode = self.terminal.mode();
         if !self.reports_mouse(&event.modifiers) {
             return;
@@ -266,6 +305,15 @@ impl Render for TerminalView {
         let line_height = (font_size * LINE_HEIGHT).round();
         let layout = self.layout.clone();
         let metrics = Metrics { cell_width, line_height, font_size };
+        let view = cx.entity();
+        let focus_handle = self.focus_handle.clone();
+        let overlay = Overlay {
+            focused,
+            link: self.hovered_link.clone(),
+            marked_text: self.marked_text.clone(),
+            foreground: terminal.palette().foreground,
+        };
+        let link_hint = self.hovered_link.as_ref().map(|link| SharedString::from(link.uri.clone()));
 
         let exited = self.exited.map(|code| match code {
             Some(code) => format!("[processus terminé, code {code}]"),
@@ -285,6 +333,16 @@ impl Render for TerminalView {
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.update_hovered_link(&event.modifiers, cx);
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered {
+                    this.mouse_position = None;
+                    this.update_hovered_link(&Modifiers::default(), cx);
+                }
+            }))
+            .when(self.hovered_link.is_some(), |d| d.cursor_pointer())
             .size_full()
             .bg(background)
             .p_1()
@@ -299,6 +357,7 @@ impl Render for TerminalView {
                             line_height: metrics.line_height,
                             columns: columns as usize,
                             lines: lines as usize,
+                            cursor: None,
                         });
                         terminal.resize(
                             columns as u16,
@@ -306,14 +365,35 @@ impl Render for TerminalView {
                             f32::from(metrics.cell_width) as u16,
                             f32::from(metrics.line_height) as u16,
                         );
-                        terminal.snapshot()
+                        let snapshot = terminal.snapshot();
+                        layout.set(GridLayout { cursor: snapshot.cursor, ..layout.get() });
+                        snapshot
                     },
                     move |bounds, snapshot, window, cx| {
-                        paint_grid(bounds, &snapshot, &metrics, &font, focused, window, cx);
+                        paint_grid(bounds, &snapshot, &metrics, &font, &overlay, window, cx);
+                        // Texte composé (accents, méthode de saisie) : reçu par `EntityInputHandler`.
+                        window.handle_input(&focus_handle, ElementInputHandler::new(bounds, view), cx);
                     },
                 )
                 .size_full(),
             )
+            .children(link_hint.map(|uri| {
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .left_3()
+                    .max_w(px(640.0))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .bg(crate::theme::elevated())
+                    .border_1()
+                    .border_color(crate::theme::border_strong())
+                    .text_xs()
+                    .text_color(crate::theme::text_muted())
+                    .truncate()
+                    .child(uri)
+            }))
             .children(exited.map(|text| {
                 div()
                     .absolute()
@@ -323,6 +403,85 @@ impl Render for TerminalView {
                     .child(SharedString::from(text))
             }))
     }
+}
+
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
+        Some(UTF16Selection { range: 0..0, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked_text.as_ref().map(|text| 0..text.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.marked_text.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Texte validé par la méthode de saisie : envoyé tel quel au programme.
+    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked_text = None;
+        if !text.is_empty() {
+            self.terminal.scroll_to_bottom();
+            self.terminal.write(text.as_bytes().to_vec());
+        }
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: Option<Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked_text = (!text.is_empty()).then(|| text.to_owned());
+        cx.notify();
+    }
+
+    /// Cellule du curseur : la fenêtre de la méthode de saisie s'ouvre à côté.
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let layout = self.layout.get();
+        let (row, column) = layout.cursor?;
+        Some(Bounds::new(
+            point(
+                layout.origin.x + layout.cell_width * column as f32,
+                layout.origin.y + layout.line_height * row as f32,
+            ),
+            size(layout.cell_width, layout.line_height),
+        ))
+    }
+
+    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        None
+    }
+}
+
+/// Ce qui change le dessin de la grille : focus (curseur), lien survolé, texte en composition.
+struct Overlay {
+    focused: bool,
+    link: Option<Link>,
+    marked_text: Option<String>,
+    foreground: Rgb,
 }
 
 #[derive(Clone, Copy)]
@@ -337,11 +496,12 @@ fn paint_grid(
     snapshot: &Snapshot,
     metrics: &Metrics,
     font: &Font,
-    focused: bool,
+    overlay: &Overlay,
     window: &mut Window,
     cx: &mut App,
 ) {
     let origin = bounds.origin;
+    let focused = overlay.focused;
     let cell_origin = |row: usize, column: usize| {
         point(
             origin.x + metrics.cell_width * column as f32,
@@ -367,6 +527,11 @@ fn paint_grid(
     const SELECTION: Rgb = Rgb { r: 0x3a, g: 0x4d, b: 0x44 };
     for cell in cells.iter_mut().filter(|c| c.selected) {
         cell.bg = SELECTION;
+    }
+    if let Some(link) = &overlay.link {
+        for cell in cells.iter_mut().filter(|c| link.contains(c.row, c.column)) {
+            cell.flags.insert(CellFlags::UNDERLINE);
+        }
     }
 
     // 1. Fonds : on fusionne les cellules voisines de même couleur.
@@ -470,10 +635,31 @@ fn paint_grid(
         }
     }
 
-    // 4. Curseurs non pleins (barre, soulignement, bloc creux si la vue n'a pas le focus).
     let Some((row, column)) = snapshot.cursor else {
         return;
     };
+
+    // 4. Texte en composition (après une touche morte ou dans une méthode de saisie),
+    // souligné sur fond opaque à la place du curseur.
+    if let Some(text) = overlay.marked_text.as_deref() {
+        let color = to_hsla(overlay.foreground);
+        let run = TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: Some(UnderlineStyle { thickness: px(1.0), color: Some(color), wavy: false }),
+            strikethrough: None,
+        };
+        let line = window.text_system().shape_line(text.to_owned().into(), metrics.font_size, &[run], None);
+        let origin = cell_origin(row, column);
+        let width = line.width.max(metrics.cell_width);
+        window.paint_quad(fill(Bounds::new(origin, size(width, metrics.line_height)), to_hsla(snapshot.background)));
+        let _ = line.paint(origin, metrics.line_height, window, cx);
+        return;
+    }
+
+    // 5. Curseurs non pleins (barre, soulignement, bloc creux si la vue n'a pas le focus).
     let color = to_hsla(snapshot.cursor_color);
     let cell = cell_bounds(row, column, 1);
     let thickness = px(2.0);

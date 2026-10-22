@@ -6,13 +6,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{self, Term};
 use alacritty_terminal::tty;
 use anyhow::{Context, Result};
 
 use crate::colors::Palette;
+use crate::links::{self, Link};
 
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::term::cell::Flags as CellFlags;
@@ -60,6 +63,8 @@ pub struct Terminal {
     sender: EventLoopSender,
     window_size: Arc<Mutex<WindowSize>>,
     palette: Palette,
+    /// Compilée une fois : la construction des automates coûte plus que la recherche.
+    url_regex: Mutex<RegexSearch>,
 }
 
 impl Terminal {
@@ -94,7 +99,13 @@ impl Terminal {
         let _ = listener.sender.set(sender.clone());
         event_loop.spawn();
 
-        Ok(Self { term, sender, window_size: listener.window_size, palette: Palette::default() })
+        Ok(Self {
+            term,
+            sender,
+            window_size: listener.window_size,
+            palette: Palette::default(),
+            url_regex: Mutex::new(links::url_regex()),
+        })
     }
 
     /// Envoie des octets au programme (saisie clavier, collage…).
@@ -145,6 +156,17 @@ impl Terminal {
 
     pub fn mode(&self) -> TermMode {
         *self.term.lock().mode()
+    }
+
+    /// Lien (hyperlien OSC 8 ou URL du texte) sous la cellule visible (`row`, `column`).
+    pub fn link_at(&self, row: usize, column: usize) -> Option<Link> {
+        let term = self.term.lock();
+        if row >= term.screen_lines() || column >= term.columns() {
+            return None;
+        }
+        let offset = term.grid().display_offset() as i32;
+        let point = Point::new(Line(row as i32 - offset), Column(column));
+        links::link_at(&term, &mut self.url_regex.lock().unwrap(), point)
     }
 
     pub fn palette(&self) -> &Palette {
@@ -359,6 +381,28 @@ mod tests {
         let snapshot = wait_for(&terminal, |s| (0..s.lines).any(|r| s.line_text(r).contains("Rok")));
         let r = snapshot.cells.iter().find(|c| c.c == 'R').unwrap();
         assert_eq!(r.fg, terminal.palette().ansi[1]);
+    }
+
+    #[test]
+    fn detects_urls_and_hyperlinks() {
+        let mut options = TerminalOptions::new("/bin/sh");
+        options.args = vec![
+            "-c".into(),
+            r"printf 'voir https://grove.dev/doc. ok\n\033]8;;https://example.com/x\033\\lien\033]8;;\033\\ fin'; sleep 5".into(),
+        ];
+        let terminal = Terminal::spawn(options, |_| {}).unwrap();
+        wait_for(&terminal, |s| s.line_text(1).contains("fin"));
+
+        let link = terminal.link_at(0, 10).expect("URL détectée");
+        assert_eq!(link.uri, "https://grove.dev/doc");
+        assert_eq!((link.start, link.end), ((0, 5), (0, 25)));
+        assert_eq!(terminal.link_at(0, 26), None, "le point final n'en fait pas partie");
+        assert_eq!(terminal.link_at(0, 1), None);
+
+        let hyperlink = terminal.link_at(1, 2).expect("hyperlien OSC 8");
+        assert_eq!(hyperlink.uri, "https://example.com/x");
+        assert_eq!((hyperlink.start, hyperlink.end), ((1, 0), (1, 3)));
+        assert_eq!(terminal.link_at(1, 5), None);
     }
 
     #[test]

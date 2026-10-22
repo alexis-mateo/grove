@@ -1,11 +1,23 @@
-use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixListener;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::protocol::Message;
+use crate::protocol::{Message, MessageKind};
+
+/// Réponse à une demande de permission, sur la connexion qui l'a apportée.
+/// Détruite sans réponse, elle ferme la connexion : la demande est refusée.
+pub struct Reply(Option<UnixStream>);
+
+impl Reply {
+    pub fn send(mut self, value: &serde_json::Value) {
+        if let Some(mut stream) = self.0.take() {
+            let _ = stream.write_all(format!("{value}\n").as_bytes());
+        }
+    }
+}
 
 /// Serveur du socket : reçoit les messages de `grove hook` / `grove statusline`.
 /// Le socket est supprimé quand la valeur est détruite.
@@ -14,7 +26,8 @@ pub struct EventServer {
 }
 
 impl EventServer {
-    pub fn start(path: &Path, on_message: impl Fn(Message) + Send + 'static) -> Result<Self> {
+    /// `on_message` reçoit chaque message, et la réponse attendue pour une demande de permission.
+    pub fn start(path: &Path, on_message: impl Fn(Message, Option<Reply>) + Send + 'static) -> Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
         }
@@ -26,11 +39,16 @@ impl EventServer {
                 let Ok(stream) = stream else { continue };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                 let mut line = String::new();
-                if BufReader::new(stream).read_line(&mut line).is_err() {
+                let mut reader = BufReader::new(stream);
+                if reader.read_line(&mut line).is_err() {
                     continue;
                 }
                 match serde_json::from_str::<Message>(&line) {
-                    Ok(message) => on_message(message),
+                    Ok(message) if message.kind == MessageKind::Permission => {
+                        let reply = Reply(Some(reader.into_inner()));
+                        on_message(message, Some(reply));
+                    }
+                    Ok(message) => on_message(message, None),
                     Err(err) => log::debug!("message de hook illisible : {err}"),
                 }
             }
@@ -63,7 +81,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("grove.sock");
         let (tx, rx) = mpsc::channel();
-        let server = EventServer::start(&path, move |m| {
+        let server = EventServer::start(&path, move |m, _| {
             let _ = tx.send(m);
         })
         .unwrap();
@@ -81,5 +99,23 @@ mod tests {
 
         drop(server);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn permission_requests_get_a_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grove.sock");
+        let _server = EventServer::start(&path, |m, reply| {
+            assert_eq!(m.kind, MessageKind::Permission);
+            reply.expect("réponse attendue").send(&serde_json::json!({"behavior": "allow"}));
+        })
+        .unwrap();
+
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream.write_all(br#"{"tab":"t1","kind":"permission","payload":{"tool_name":"Bash"}}"#).unwrap();
+        stream.write_all(b"\n").unwrap();
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).unwrap();
+        assert_eq!(reply.trim(), r#"{"behavior":"allow"}"#);
     }
 }

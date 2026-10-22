@@ -92,8 +92,8 @@ impl Workspace {
     }
 
     /// Ajoute un onglet Claude ; `session_id` pour reprendre une session existante.
-    pub fn add_claude_tab(&mut self, session_id: Option<String>) -> TabId {
-        self.add_tab(TabKind::Claude { session_id })
+    pub fn add_claude_tab(&mut self, session_id: Option<String>, view: ClaudeView) -> TabId {
+        self.add_tab(TabKind::Claude { session_id, view })
     }
 
     fn add_tab(&mut self, kind: TabKind) -> TabId {
@@ -164,9 +164,33 @@ pub struct Tab {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TabKind {
     Terminal,
-    /// CLI `claude` dans un PTY. `session_id` est connu après `SessionStart`
+    /// Session Claude Code. `session_id` est connu après `SessionStart`
     /// et sert à reprendre la session au redémarrage (`--resume`).
-    Claude { session_id: Option<String> },
+    Claude {
+        session_id: Option<String>,
+        #[serde(default)]
+        view: ClaudeView,
+    },
+}
+
+/// Affichage d'une session Claude ; la bascule relance `claude` avec `--resume` (specs §10.4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeView {
+    /// TUI officiel de `claude` dans un PTY.
+    #[default]
+    Terminal,
+    /// Interface native de Grove, qui pilote `claude -p` en stream-json.
+    Native,
+}
+
+impl ClaudeView {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Terminal => Self::Native,
+            Self::Native => Self::Terminal,
+        }
+    }
 }
 
 fn dir_name(path: &Path) -> String {
@@ -216,6 +240,12 @@ mod tests {
 
         ws.close_tab(a);
         assert_eq!(ws.active_tab, None);
+    }
+
+    #[test]
+    fn claude_tabs_saved_before_the_native_view_open_in_the_terminal() {
+        let kind: TabKind = serde_json::from_str(r#"{"type": "claude", "session_id": "abc"}"#).unwrap();
+        assert_eq!(kind, TabKind::Claude { session_id: Some("abc".into()), view: ClaudeView::Terminal });
     }
 
     #[test]

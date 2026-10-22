@@ -9,7 +9,7 @@ pub mod state;
 
 pub use config::{ClaudeConfig, Config};
 pub use ids::{ProjectId, TabId, WorkspaceId};
-pub use model::{Project, Tab, TabKind, Workspace, WorkspaceKind};
+pub use model::{ClaudeView, Project, Tab, TabKind, Workspace, WorkspaceKind};
 pub use paths::Paths;
 pub use project_config::{ProjectConfig, WorktreeConfig, WorktreeLocation};
 pub use state::State;

@@ -251,8 +251,8 @@ Exigences minimales pour un usage quotidien (et pour faire tourner le TUI de Cla
 - scrollback configurable, recherche dans le scrollback ;
 - sélection souris, copier/coller, **bracketed paste** ;
 - reporting souris (pour les TUI) ;
-- saisie clavier complète, y compris les combinaisons Alt/Ctrl et l'IME ;
-- liens cliquables (OSC 8 + détection d'URL) ;
+- saisie clavier complète, y compris les combinaisons Alt/Ctrl et l'IME (texte composé reçu par un `InputHandler` GPUI : sous IBus, une lettre accentuée n'arrive pas comme une frappe) ;
+- liens cliquables (OSC 8 + détection d'URL) : `Ctrl+clic`, soulignés au survol avec `Ctrl`, schémas connus seulement ;
 - **OSC 7** (cwd courant) et titre de fenêtre (OSC 0/2) ;
 - performances : pas de lag sur une sortie massive (`cat` d'un gros fichier, redraws de Claude).
 
@@ -485,9 +485,13 @@ claude -p --input-format stream-json --output-format stream-json \
 - stdin : messages utilisateur.
 - Types `serde` tolérants (`#[serde(other)]`, champs optionnels) pour résister aux évolutions.
 
+Avec `--include-partial-messages`, chaque bloc arrive en morceaux (`stream_event`) puis en entier dans un message `assistant` (un message par bloc, vérifié en 2.1.308) : le texte vient des morceaux, l'entrée des outils du message complet. Les lignes non JSON (bannière d'un alias du shell) sont ignorées. `--resume` ne renvoie pas l'historique : la vue le relit dans le transcript.
+
 ### 10.2 Permissions
 
 - **Approche principale (Rust pur)** : `--permission-prompt-tool` pointant vers un **serveur MCP exposé par l'app**. Chaque demande s'affiche dans l'UI : Accepter / Refuser / Toujours accepter.
+  - Fait : `grove mcp-permission`, déclaré par `--mcp-config` avec `GROVE_SOCKET` et `GROVE_TAB_ID`, transmet `{ tool_name, input, tool_use_id }` au socket (message `permission`) et attend la décision sur la même connexion (`{"behavior": "allow", "updatedInput"}` ou `{"behavior": "deny", "message"}`). Connexion fermée sans réponse = refus. « Toujours » vaut pour l'outil, jusqu'à la fin de la session.
+  - Les actions classées sensibles par Claude Code (fichiers de `~/.claude`…) sont refusées sans consulter l'outil.
 - **Repli** : si des fonctions du protocole de contrôle des SDK officiels deviennent nécessaires (interruption, changement de mode, `canUseTool`), passer par un **sidecar Node** qui embarque le SDK TypeScript et dialogue avec l'app en JSON-RPC. Ce protocole n'est pas une API publique stable, d'où le sidecar plutôt qu'une réimplémentation en Rust.
 
 ### 10.3 Fonctionnalités UI
@@ -500,11 +504,17 @@ claude -p --input-format stream-json --output-format stream-json \
 - Champ de saisie : multiligne, historique, `@fichier` avec autocomplétion, glisser-déposer d'images.
 - Bouton d'interruption.
 
+État (première itération) :
+
+- fait : streaming, markdown simple (titres, listes, code, citations, gras, code en ligne ; tableaux en chasse fixe), appels d'outils repliables avec résultat (40 lignes), différence `old_string` / `new_string` dans le détail et dans la demande de permission, copie d'une réponse, historique des prompts, coût cumulé et tokens de contexte, mode de permission (`Maj+Tab`) ;
+- interruption : `SIGINT` au groupe du processus, la session reprend au message suivant (`--resume`). L'interruption sans arrêt passerait par le protocole de contrôle (repli du §10.2) ;
+- à faire : coloration syntaxique, images, `@fichier`, glisser-déposer, jauge de contexte en pourcentage (la taille de la fenêtre n'est pas dans le flux), sélection du texte du fil, limites d'usage depuis `rate_limit_event` (unité de `utilization` à vérifier).
+
 ### 10.4 Bascule de vue
 
 - La session est l'entité, la vue (`Terminal` ou `Native`) est un attribut de l'onglet.
 - Basculer = arrêter le processus courant, puis relancer avec `--resume <session_id>` dans l'autre mode. Les deux partagent le même transcript.
-- **Une seule vue active à la fois par session** (verrou côté app).
+- **Une seule vue active à la fois par session** (verrou côté app) : la bascule (`Ctrl+Shift+M`) détruit la vue courante et son processus avant de créer l'autre. La vue est persistée dans l'onglet (`TabKind::Claude { view }`), `[claude] view` choisit celle des nouveaux onglets.
 - Usage type : vue native au quotidien, bascule vers le terminal pour une fonctionnalité pas encore gérée (slash command spécifique, plan mode…).
 
 ### 10.5 Limites assumées

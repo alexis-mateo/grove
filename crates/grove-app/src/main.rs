@@ -5,8 +5,10 @@ mod fonts;
 mod grove_view;
 mod keys;
 mod list;
+mod markdown;
 mod marquee;
 mod mouse;
+mod native_view;
 mod sidebar;
 mod tab_bar;
 mod terminal_view;
@@ -30,6 +32,8 @@ fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("hook") => return exit(grove_claude::run_hook()),
         Some("statusline") => return exit(grove_claude::run_statusline()),
+        // Serveur MCP des demandes de permission de la vue native, lancé par Claude Code.
+        Some("mcp-permission") => return exit(grove_claude::run_mcp_server()),
         _ => {}
     }
 

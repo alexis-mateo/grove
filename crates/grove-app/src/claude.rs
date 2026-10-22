@@ -8,7 +8,10 @@ use gpui::{
     Context, FocusHandle, Hsla, KeyDownEvent, SharedString, Task, Window, div, prelude::*, px,
 };
 use grove_claude::transcripts::{self, SessionSummary};
-use grove_claude::{ClaudeStatus, EventServer, Message, MessageKind, RateLimits, Session, Transition};
+use grove_claude::{
+    ClaudeStatus, EventServer, Message, MessageKind, NativeOptions, PermissionPrompt, RateLimits, Reply, Session,
+    Transition,
+};
 use grove_core::{Paths, TabId, TabKind};
 use grove_term::TerminalOptions;
 
@@ -43,9 +46,9 @@ pub(crate) struct History {
 
 impl ClaudeRuntime {
     pub fn start(paths: &Paths, usage_api: bool, window: &mut Window, cx: &mut Context<GroveView>) -> Self {
-        let (tx, rx) = smol::channel::unbounded::<Message>();
-        let server = EventServer::start(&grove_claude::socket_path(&paths.data_dir), move |message| {
-            let _ = tx.try_send(message);
+        let (tx, rx) = smol::channel::unbounded::<(Message, Option<Reply>)>();
+        let server = EventServer::start(&grove_claude::socket_path(&paths.data_dir), move |message, reply| {
+            let _ = tx.try_send((message, reply));
         })
         .map_err(|err| log::error!("socket des hooks Claude : {err:#}"))
         .ok();
@@ -59,8 +62,8 @@ impl ClaudeRuntime {
             .ok();
 
         let messages = cx.spawn_in(window, async move |this, cx| {
-            while let Ok(message) = rx.recv().await {
-                if this.update_in(cx, |this, window, cx| this.on_claude_message(message, window, cx)).is_err() {
+            while let Ok((message, reply)) = rx.recv().await {
+                if this.update_in(cx, |this, window, cx| this.on_claude_message(message, reply, window, cx)).is_err() {
                     break;
                 }
             }
@@ -137,10 +140,68 @@ impl GroveView {
         options
     }
 
-    fn on_claude_message(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+    /// Options de `claude -p` pour la vue native d'un onglet (specs §10.1).
+    pub(crate) fn native_options(&mut self, tab: TabId, cwd: PathBuf, session_id: Option<&str>) -> NativeOptions {
+        let mut env = std::collections::HashMap::new();
+        env.insert(grove_claude::ENV_TAB_ID.to_owned(), tab.to_string());
+        let mut permission_prompt = None;
+        if let Some(server) = &self.claude.server {
+            env.insert(grove_claude::ENV_SOCKET.to_owned(), server.path().to_string_lossy().into_owned());
+            // Sans serveur MCP, les actions soumises à permission sont refusées.
+            if let Ok(exe) = std::env::current_exe() {
+                permission_prompt = Some(PermissionPrompt {
+                    mcp_config: grove_claude::mcp_config(&exe, server.path(), &tab.to_string()),
+                    tool: grove_claude::permission_tool(),
+                });
+            }
+        }
+        self.claude.sessions.insert(tab, Session::default());
+        NativeOptions {
+            shell: self.config.shell(),
+            command: self.config.claude.command.clone(),
+            cwd: Some(cwd),
+            env,
+            settings: self.claude.settings_file.clone(),
+            resume: session_id.map(str::to_owned),
+            permission_mode: None,
+            permission_prompt,
+        }
+    }
+
+    /// Mémorise l'id de session d'un onglet pour la reprise (il change après `/clear`).
+    pub(crate) fn remember_session_id(&mut self, tab: TabId, session_id: Option<String>) {
+        let Some(key) = self.locate_tab(tab) else { return };
+        if let Some(t) = self.state.workspace_mut(key).and_then(|w| w.tab_mut(tab))
+            && let TabKind::Claude { session_id: saved, .. } = &mut t.kind
+            && *saved != session_id
+        {
+            *saved = session_id;
+            self.save();
+        }
+    }
+
+    fn on_claude_message(&mut self, message: Message, reply: Option<Reply>, window: &mut Window, cx: &mut Context<Self>) {
         log::debug!("claude {:?} : {}", message.kind, message.payload);
         let Ok(tab) = message.tab.parse::<TabId>() else { return };
         let Some(key) = self.locate_tab(tab) else { return };
+        if message.kind == MessageKind::Permission {
+            // Sans vue native, `reply` est détruit : la demande est refusée.
+            let (Some(native), Some(reply)) = (self.natives.get(&tab).cloned(), reply) else { return };
+            native.update(cx, |native, cx| native.request_permission(&message.payload, reply, cx));
+            // Même effet qu'un hook `PermissionRequest` : badge et notification.
+            let tool = message.payload.get("tool_name").cloned().unwrap_or_default();
+            let hook = Message {
+                tab: message.tab.clone(),
+                kind: MessageKind::Hook,
+                payload: serde_json::json!({ "hook_event_name": "PermissionRequest", "tool_name": tool }),
+            };
+            let transition = self.claude.sessions.entry(tab).or_default().apply(&hook);
+            if let Some(transition) = transition {
+                self.notify_transition(key, tab, transition, window, cx);
+            }
+            cx.notify();
+            return;
+        }
         if message.kind == MessageKind::Statusline
             && let Some(limits) = RateLimits::from_statusline(&message.payload)
         {
@@ -150,15 +211,7 @@ impl GroveView {
         let session = self.claude.sessions.entry(tab).or_default();
         let transition = session.apply(&message);
         let session_id = session.session_id.clone();
-
-        // Mémorise l'id de session pour la reprise au redémarrage (il change après `/clear`).
-        if let Some(t) = self.state.workspace_mut(key).and_then(|w| w.tab_mut(tab))
-            && let TabKind::Claude { session_id: saved } = &mut t.kind
-            && *saved != session_id
-        {
-            *saved = session_id;
-            self.save();
-        }
+        self.remember_session_id(tab, session_id);
 
         if let Some(transition) = transition {
             self.notify_transition(key, tab, transition, window, cx);
@@ -248,7 +301,7 @@ impl GroveView {
                     suggest_worktree: true,
                 });
             }
-            workspace.add_claude_tab(session_id);
+            workspace.add_claude_tab(session_id, self.config.claude.view);
             self.claude.history = None;
             self.save();
             self.focus_active(window, cx);

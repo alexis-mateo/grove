@@ -5,9 +5,11 @@
 //! [`Terminal::snapshot`].
 
 mod colors;
+mod links;
 mod terminal;
 
 pub use colors::Palette;
+pub use links::{Link, is_openable};
 pub use terminal::{
     CellFlags, CursorShape, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
     TerminalOptions,

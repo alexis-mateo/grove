@@ -10,7 +10,7 @@ use grove_git::{Branch, NewWorktree};
 use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::list::{ListScroll, ROW_HEIGHT};
 use crate::marquee::marquee;
-use crate::text_field::{Edit, TextField};
+use crate::text_field::{self, Edit, TextField};
 use crate::theme;
 use crate::ui::{ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field};
 
@@ -275,13 +275,13 @@ impl GroveView {
             self.pending_commands.insert(tab, setup_script(&created.setup));
         }
         if with_claude {
-            workspace.add_claude_tab(None);
+            workspace.add_claude_tab(None, self.config.claude.view);
         }
         self.watch_git(id, &created.path, cx);
         self.activate_workspace((project, id), window, cx);
     }
 
-    fn worktree_dialog_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn worktree_dialog_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = &mut self.worktree_dialog else { return };
         let keystroke = &event.keystroke;
         let count = dialog.items().len();
@@ -359,6 +359,7 @@ impl GroveView {
         };
 
         let panel = popover("worktree-dialog", &dialog.focus, px(480.0))
+            .child(text_field::input_target(&dialog.focus, cx.entity()))
             .on_key_down(cx.listener(Self::worktree_dialog_key_down))
             .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                 this.popover_dismissed = true;

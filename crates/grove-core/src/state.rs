@@ -97,7 +97,7 @@ mod tests {
         let active = state.active_workspace.unwrap();
         assert_eq!(active.0, project);
         state.workspace_mut(active).unwrap().add_terminal_tab();
-        state.workspace_mut(active).unwrap().add_claude_tab(Some("abc".into()));
+        state.workspace_mut(active).unwrap().add_claude_tab(Some("abc".into()), crate::ClaudeView::Native);
 
         state.save(&path).unwrap();
         assert_eq!(State::load(&path).unwrap(), state);

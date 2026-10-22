@@ -5,12 +5,12 @@
 use gpui::{
     Context, KeyDownEvent, MouseButton, Render, SharedString, Window, div, prelude::*, px,
 };
-use grove_core::{TabId, TabKind};
+use grove_core::{ClaudeView, TabId, TabKind};
 
 use crate::claude::status_badge;
 use crate::grove_view::{GroveView, NewTab, ToggleSidebar};
 use crate::marquee::marquee;
-use crate::text_field::Edit;
+use crate::text_field::{self, Edit};
 use crate::theme;
 use crate::ui::{Icon, icon, icon_button, sized_icon, tooltip, vertical_divider};
 use crate::window_frame::{TOP_BAR_HEIGHT, drag_region, window_controls};
@@ -73,6 +73,7 @@ impl GroveView {
                     .map(|(index, tab)| self.render_tab(key, index, tab, active == Some(tab.id), cx))
                     .collect();
                 let claude_tab = active.is_some_and(|tab| self.claude.sessions.contains_key(&tab));
+                let native = active.and_then(|tab| self.claude_view(tab)) == Some(ClaudeView::Native);
 
                 let sync = self.render_sync_button(key, cx);
                 bar.children(self.render_branch_chip(key, cx).map(|chip| {
@@ -111,7 +112,18 @@ impl GroveView {
                         .tooltip(tooltip("Sessions Claude de cet espace · Ctrl+Shift+H"))
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_history(window, cx))),
                 )
-                .when(claude_tab, |d| {
+                .when_some(active.and_then(|tab| self.claude_view(tab)), |d, view| {
+                    let (glyph, label) = match view {
+                        ClaudeView::Terminal => (Icon::Claude, "Passer à la vue native · Ctrl+Shift+M"),
+                        ClaudeView::Native => (Icon::Terminal, "Passer au terminal (TUI officiel) · Ctrl+Shift+M"),
+                    };
+                    d.child(
+                        icon_button("claude-view-button", glyph)
+                            .tooltip(tooltip(label))
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_claude_view(window, cx))),
+                    )
+                })
+                .when(claude_tab && !native, |d| {
                     d.child(
                         icon_button("session-panel-button", Icon::PanelRight)
                             .when(self.claude.panel_visible, |b| b.bg(theme::selected()))
@@ -153,6 +165,7 @@ impl GroveView {
             Some(rename) => div()
                 .track_focus(&rename.focus)
                 .on_key_down(cx.listener(Self::rename_key_down))
+                .relative()
                 .flex()
                 .px_1()
                 .rounded_sm()
@@ -161,6 +174,7 @@ impl GroveView {
                 .border_color(theme::accent())
                 .text_color(theme::text())
                 .child(rename.field.render(""))
+                .child(text_field::input_target(&rename.focus, cx.entity()))
                 .into_any_element(),
             None => div()
                 .flex()
@@ -234,7 +248,16 @@ impl GroveView {
             .into_any_element()
     }
 
-    fn rename_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    /// Vue d'un onglet Claude ; `None` pour un terminal.
+    fn claude_view(&self, tab: TabId) -> Option<ClaudeView> {
+        let key = self.locate_tab(tab)?;
+        match self.state.workspace(key)?.tabs.iter().find(|t| t.id == tab)?.kind {
+            TabKind::Claude { view, .. } => Some(view),
+            TabKind::Terminal => None,
+        }
+    }
+
+    pub(crate) fn rename_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         match keystroke.key.as_str() {
             "enter" => self.finish_rename(true, window, cx),

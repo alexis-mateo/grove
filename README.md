@@ -6,7 +6,8 @@ Terminal multi-projets orienté Claude Code. Voir [specs.md](specs.md).
 
 Phases 0 à 3 : terminal, sidebar, onglets, branches, restauration ; onglets
 Claude suivis par les hooks, usage du compte ; worktrees (création, promotion,
-suppression, import).
+suppression, import). Phase 4 commencée : vue native des sessions Claude
+(stream-json, permissions, bascule avec le terminal).
 
 | Crate | Rôle |
 |---|---|
@@ -57,10 +58,19 @@ garde l'ancien binaire jusqu'à sa fermeture.
 | `Ctrl+Shift+H` | Sessions passées de l'espace (clic = reprendre) |
 | `Ctrl+Shift+G` | Sélecteur de branches (chercher, changer, créer depuis la branche courante ou la branche principale, supprimer, déplacer le travail dans un worktree) |
 | `Ctrl+Shift+N` | Nouvel espace de travail (worktree) ; `Maj+Entrée` l'ouvre avec Claude |
+| `Ctrl+Shift+M` | Onglet Claude : basculer entre le terminal (TUI officiel) et la vue native |
 | `Ctrl+Shift+V` | Coller |
 | `Shift+PageUp/PageDown` | Défiler dans le scrollback |
 
 Clic milieu sur un onglet : le fermer.
+
+Liens du terminal (URL du texte et hyperliens OSC 8, schémas `http(s)`,
+`file`, `mailto`, `ftp`, `ssh`, `git`) : soulignés au survol avec `Ctrl`,
+ouverts par `Ctrl+clic` ; l'adresse s'affiche en bas à gauche.
+
+Lettres accentuées et touches mortes (`^` puis `e`…) : le texte composé par la
+méthode de saisie (IBus, XIM, compose) arrive dans le terminal, la vue native
+et les champs de saisie ; la composition en cours s'affiche soulignée au curseur.
 
 Champs de saisie (recherche de branche, nouvel espace, renommage) : `Ctrl+A`
 sélectionne tout, `Ctrl+C` / `Ctrl+X` copient / coupent (tout le texte sans
@@ -104,6 +114,25 @@ coupe les notifications système.
 via l'endpoint interne d'Anthropic, avec le jeton de Claude Code, toutes les 3 min.
 C'est hors des points d'intégration officiels, d'où l'option désactivée par défaut
 (cf. specs §8.5).
+
+### Vue native
+
+`Ctrl+Shift+M` (ou le bouton de la barre d'onglets) bascule l'onglet Claude
+actif : le processus courant s'arrête et l'autre vue reprend la session
+(`--resume`). `[claude] view = "native"` ouvre les nouveaux onglets Claude dans
+cette vue. Elle pilote `claude -p --input-format stream-json --output-format
+stream-json`, lancé par le shell interactif comme en mode terminal :
+
+- fil de la conversation (markdown simple, appels d'outils repliables, différences
+  pour `Edit`), relu dans le transcript pour une session reprise ;
+- `Entrée` envoie, `Maj+Entrée` ajoute une ligne, `↑` / `↓` rappellent les prompts,
+  `Échap` interrompt (le processus s'arrête, le message suivant reprend la session) ;
+- `Maj+Tab` change le mode de permission (demander, modifications auto, plan), appliqué
+  par relance du processus ;
+- les demandes de permission passent par `--permission-prompt-tool` : Claude Code lance
+  `grove mcp-permission` (serveur MCP sur stdio), qui transmet la demande au socket et
+  attend la réponse (Autoriser, Toujours pour cet outil pendant la session, Refuser).
+  Si Grove ne répond pas, la demande est refusée.
 
 `RUST_LOG=grove=debug` affiche les événements reçus.
 

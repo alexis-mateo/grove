@@ -23,6 +23,9 @@ pub struct Message {
 pub enum MessageKind {
     Hook,
     Statusline,
+    /// Demande de permission de la vue native (`grove mcp-permission`) : la
+    /// connexion reste ouverte jusqu'à la décision ([`crate::Reply`]).
+    Permission,
 }
 
 /// Socket propre à chaque instance de Grove. Supprime au passage les sockets

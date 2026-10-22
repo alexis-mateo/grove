@@ -16,7 +16,7 @@ use grove_git::{Branch, CheckoutStatus};
 use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::list::{ListScroll, ROW_HEIGHT};
 use crate::marquee::marquee;
-use crate::text_field::{Edit, TextField};
+use crate::text_field::{self, Edit, TextField};
 use crate::theme;
 use crate::ui::{
     ButtonStyle, Icon, button, hint, icon, icon_button, list_row, popover, popover_footer, search_field, sized_icon,
@@ -255,7 +255,7 @@ impl GroveView {
         cx.notify();
     }
 
-    fn branch_picker_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn branch_picker_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(picker) = &mut self.branch_picker else { return };
         let keystroke = &event.keystroke;
         let count = picker.items().len();
@@ -477,6 +477,7 @@ impl GroveView {
                 this.close_branch_picker(window, cx);
             }))
             .child(search_field(&picker.query, "Chercher ou créer une branche…"))
+            .child(text_field::input_target(&picker.focus, cx.entity()))
             .child(div().p_1().child(list))
             .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
             .children(picker.error.clone().map(|e| div().px_3().py_2().text_color(theme::danger()).child(e)))

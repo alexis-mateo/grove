@@ -5,7 +5,10 @@
 //! possible est « tout » (Ctrl+A) ; sans sélection, copier et couper portent
 //! sur tout le texte, comme VS Code le fait pour la ligne courante.
 
-use gpui::{App, ClipboardItem, Div, Keystroke, div, prelude::*};
+use gpui::{
+    App, ClipboardItem, Div, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Keystroke, canvas, div,
+    prelude::*,
+};
 
 use crate::theme;
 
@@ -114,6 +117,12 @@ impl TextField {
         self.text.push_str(text);
     }
 
+    /// Texte validé par une méthode de saisie (lettres accentuées, touches mortes) :
+    /// la touche équivalente, sans nom pour qu'aucun raccourci ne s'y applique.
+    pub fn composed(text: &str) -> Keystroke {
+        Keystroke { modifiers: Default::default(), key: String::new(), key_char: Some(text.to_owned()) }
+    }
+
     /// Ctrl+Retour arrière : efface jusqu'au séparateur précédent (`/`, `-`, `_`, espace).
     fn delete_word(&mut self) {
         let is_separator = |c: char| matches!(c, '/' | '-' | '_' | '.' | ' ');
@@ -138,6 +147,19 @@ impl TextField {
             )
             .child(div().text_color(theme::accent()).child("▏"))
     }
+}
+
+/// À placer dans l'élément qui porte `focus` : tant qu'il a le focus, le texte
+/// composé par la méthode de saisie (é, è, ê, ç…, qui n'arrivent pas tous en
+/// frappes) est remis à `view`.
+pub fn input_target<V: EntityInputHandler>(focus: &FocusHandle, view: Entity<V>) -> impl IntoElement {
+    let focus = focus.clone();
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| window.handle_input(&focus, ElementInputHandler::new(bounds, view), cx),
+    )
+    .absolute()
+    .size_full()
 }
 
 #[cfg(test)]
@@ -196,6 +218,13 @@ mod tests {
         field.apply(&key("ctrl-a"), || None);
         field.apply(&key("backspace"), || None);
         assert!(field.is_empty());
+    }
+
+    #[test]
+    fn composed_text_is_inserted() {
+        let mut field = typed("caf");
+        assert_eq!(field.apply(&TextField::composed("é"), || None), Edit::Changed);
+        assert_eq!(field.as_str(), "café");
     }
 
     #[test]

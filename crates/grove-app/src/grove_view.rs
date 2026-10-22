@@ -3,18 +3,21 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use std::ops::Range;
+
 use gpui::{
-    App, Context, DragMoveEvent, Entity, FocusHandle, Focusable, PathPromptOptions, Pixels, SharedString, Task,
-    Window, actions, div, prelude::*, px,
+    App, Bounds, Context, DragMoveEvent, Entity, EntityInputHandler, FocusHandle, Focusable, KeyDownEvent,
+    PathPromptOptions, Pixels, Point, SharedString, Task, UTF16Selection, Window, actions, div, prelude::*, px,
 };
 use grove_claude::ClaudeStatus;
-use grove_core::{Config, Paths, ProjectId, State, TabId, TabKind, WorkspaceId, WorkspaceKind};
+use grove_core::{ClaudeView, Config, Paths, ProjectId, State, TabId, TabKind, WorkspaceId, WorkspaceKind};
 use grove_term::TerminalOptions;
 use grove_git::{CheckoutStatus, Head, HeadWatcher};
 
 use crate::branches::BranchPicker;
 use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
+use crate::native_view::{NativeView, NativeViewEvent};
 use crate::sidebar::{DEFAULT_SIDEBAR_WIDTH, DraggedSidebar};
 use crate::terminal_view::{Exited, TerminalView};
 use crate::text_field::TextField;
@@ -39,6 +42,7 @@ actions!(
         ShowHistory,
         OpenBranches,
         NewWorkspace,
+        ToggleClaudeView,
     ]
 );
 
@@ -62,6 +66,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("ctrl-shift-h", ShowHistory, None),
         KeyBinding::new("ctrl-shift-g", OpenBranches, None),
         KeyBinding::new("ctrl-shift-n", NewWorkspace, None),
+        KeyBinding::new("ctrl-shift-m", ToggleClaudeView, None),
     ]
 }
 
@@ -93,6 +98,8 @@ pub struct GroveView {
     pub(crate) config: Config,
     pub(crate) state: State,
     pub(crate) terminals: HashMap<TabId, Entity<TerminalView>>,
+    /// Onglets Claude en vue native.
+    pub(crate) natives: HashMap<TabId, Entity<NativeView>>,
     pub(crate) git: HashMap<WorkspaceId, GitState>,
     pub(crate) sidebar_visible: bool,
     pub(crate) sidebar_width: Pixels,
@@ -177,6 +184,7 @@ impl GroveView {
             config,
             state,
             terminals: HashMap::new(),
+            natives: HashMap::new(),
             git: HashMap::new(),
             sidebar_visible: true,
             sidebar_width,
@@ -311,6 +319,7 @@ impl GroveView {
             self.git.remove(&workspace.id);
             for tab in &workspace.tabs {
                 self.terminals.remove(&tab.id);
+                self.natives.remove(&tab.id);
                 self.claude.sessions.remove(&tab.id);
             }
         }
@@ -367,6 +376,7 @@ impl GroveView {
         };
         workspace.close_tab(tab);
         self.terminals.remove(&tab);
+        self.natives.remove(&tab);
         self.claude.sessions.remove(&tab);
         if self.rename.as_ref().is_some_and(|r| r.tab == tab) {
             self.rename = None;
@@ -468,7 +478,8 @@ impl GroveView {
                 }
                 options
             }
-            TabKind::Claude { session_id } => self.claude_options(tab, cwd, session_id.as_deref()),
+            TabKind::Claude { view: ClaudeView::Native, .. } => return None,
+            TabKind::Claude { session_id, .. } => self.claude_options(tab, cwd, session_id.as_deref()),
         };
         let terminal = match TerminalView::spawn(options, &self.config, cx) {
             Ok(terminal) => terminal,
@@ -487,11 +498,69 @@ impl GroveView {
         Some(terminal)
     }
 
-    pub(crate) fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.active_tab().and_then(|(key, tab)| self.terminal(key, tab, window, cx)) {
-            Some(terminal) => window.focus(&terminal.focus_handle(cx)),
-            None => window.focus(&self.focus_handle),
+    /// Vue native d'un onglet Claude, lancée à la première demande.
+    fn native(&mut self, key: WorkspaceKey, tab: TabId, cx: &mut Context<Self>) -> Option<Entity<NativeView>> {
+        if let Some(native) = self.natives.get(&tab) {
+            return Some(native.clone());
         }
+        let workspace = self.state.workspace(key)?;
+        let cwd = workspace.path.clone();
+        let TabKind::Claude { session_id, view: ClaudeView::Native } = workspace.tabs.iter().find(|t| t.id == tab)?.kind.clone()
+        else {
+            return None;
+        };
+        let options = self.native_options(tab, cwd, session_id.as_deref());
+        let font = crate::fonts::resolve_family(&self.config.font.family);
+        let native = cx.new(|cx| NativeView::new(options, font, cx));
+        cx.subscribe(&native, move |this, _, event: &NativeViewEvent, cx| {
+            match event {
+                NativeViewEvent::SessionId(id) => this.remember_session_id(tab, Some(id.clone())),
+                NativeViewEvent::PermissionAnswered => {
+                    if let Some(session) = this.claude.sessions.get_mut(&tab) {
+                        session.status = grove_claude::ClaudeStatus::Working { current_tool: None };
+                    }
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        self.natives.insert(tab, native.clone());
+        Some(native)
+    }
+
+    /// Vue de l'onglet actif : terminal, ou vue native d'une session Claude.
+    fn active_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyView> {
+        let (key, tab) = self.active_tab()?;
+        match self.native(key, tab, cx) {
+            Some(native) => Some(native.into()),
+            None => self.terminal(key, tab, window, cx).map(Into::into),
+        }
+    }
+
+    pub(crate) fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.active_view(window, cx).and_then(|_| {
+            let tab = self.active_tab()?.1;
+            match self.natives.get(&tab) {
+                Some(native) => Some(native.focus_handle(cx)),
+                None => Some(self.terminals.get(&tab)?.focus_handle(cx)),
+            }
+        });
+        window.focus(&focus.unwrap_or_else(|| self.focus_handle.clone()));
+    }
+
+    /// Bascule l'onglet Claude actif entre le terminal et la vue native (specs §10.4).
+    /// Le processus courant s'arrête ; l'autre vue reprend la session (`--resume`).
+    pub(crate) fn toggle_claude_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((key, tab)) = self.active_tab() else { return };
+        let Some(t) = self.state.workspace_mut(key).and_then(|w| w.tab_mut(tab)) else { return };
+        let TabKind::Claude { view, .. } = &mut t.kind else { return };
+        *view = view.toggled();
+        // Une seule vue active par session : l'ancienne est détruite avec son processus.
+        self.terminals.remove(&tab);
+        self.natives.remove(&tab);
+        self.save();
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     // Actions clavier.
@@ -548,6 +617,60 @@ impl GroveView {
     }
 }
 
+/// Texte composé par la méthode de saisie, pour le champ qui a le focus
+/// (`text_field::input_target`) : traité comme une frappe dans ce champ.
+impl EntityInputHandler for GroveView {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
+        Some(UTF16Selection { range: 0..0, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let event = KeyDownEvent { keystroke: TextField::composed(text), is_held: false };
+        let focused = |focus: &FocusHandle| focus.is_focused(window);
+        if self.rename.as_ref().is_some_and(|r| focused(&r.focus)) {
+            self.rename_key_down(&event, window, cx);
+        } else if self.branch_picker.as_ref().is_some_and(|p| focused(&p.focus)) {
+            self.branch_picker_key_down(&event, window, cx);
+        } else if self.worktree_dialog.as_ref().is_some_and(|d| focused(&d.focus)) {
+            self.worktree_dialog_key_down(&event, window, cx);
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        _: &str,
+        _: Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+    }
+
+    fn bounds_for_range(&mut self, _: Range<usize>, bounds: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        Some(bounds)
+    }
+
+    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        None
+    }
+}
+
 impl Focusable for GroveView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -557,7 +680,8 @@ impl Focusable for GroveView {
 impl Render for GroveView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_tab();
-        let terminal = active.and_then(|(key, tab)| self.terminal(key, tab, window, cx));
+        let terminal = self.active_view(window, cx);
+        let native = active.is_some_and(|(_, tab)| self.natives.contains_key(&tab));
 
         let project_name = self
             .state
@@ -597,10 +721,11 @@ impl Render for GroveView {
                                 // Vue mise en cache : elle n'est redessinée que si le terminal
                                 // change, pas à chaque survol ou défilement ailleurs dans la fenêtre.
                                 div().flex_1().min_w_0().h_full().child(
-                                    gpui::AnyView::from(terminal).cached(gpui::StyleRefinement::default().size_full()),
+                                    terminal.cached(gpui::StyleRefinement::default().size_full()),
                                 ),
                             )
-                            .children(active.and_then(|(_, tab)| self.render_session_panel(tab)))
+                            // En vue native, le pied de la saisie donne déjà modèle, coût et contexte.
+                            .children(active.filter(|_| !native).and_then(|(_, tab)| self.render_session_panel(tab)))
                             .into_any_element(),
                         (None, None) => placeholder(self.state.projects.is_empty()).into_any_element(),
                     })
@@ -635,6 +760,7 @@ impl Render for GroveView {
                     this.open_worktree_dialog(project, DialogMode::Create, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &ToggleClaudeView, window, cx| this.toggle_claude_view(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSessionPanel, _, cx| {
                 this.claude.panel_visible = !this.claude.panel_visible;
                 cx.notify();
