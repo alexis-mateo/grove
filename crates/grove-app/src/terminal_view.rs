@@ -522,6 +522,19 @@ fn paint_grid(
             size(metrics.cell_width * width as f32, metrics.line_height),
         )
     };
+    // Même cellule, bords arrondis au pixel physique et calculés à partir de
+    // l'origine des voisines : deux cellules adjacentes partagent exactement
+    // le même bord, sans liseré d'anticrénelage entre elles.
+    let scale = window.scale_factor();
+    let device_cell = |row: usize, column: usize, width: usize| {
+        let to_device = |v: Pixels| (f32::from(v) * scale).round();
+        let (start, end) = (cell_origin(row, column), cell_origin(row + 1, column + width));
+        let (x, y) = (to_device(start.x), to_device(start.y));
+        builtin_glyphs::Rect { x, y, w: to_device(end.x) - x, h: to_device(end.y) - y }
+    };
+    let from_device = |r: builtin_glyphs::Rect| {
+        Bounds::new(point(px(r.x / scale), px(r.y / scale)), size(px(r.w / scale), px(r.h / scale)))
+    };
 
     // Cellules, avec le curseur plein dessiné en inversant les couleurs.
     let block_cursor = focused && snapshot.cursor_shape == CursorShape::Block;
@@ -550,28 +563,22 @@ fn paint_grid(
                 continue;
             }
             let columns = run.iter().map(width).sum();
-            window.paint_quad(fill(cell_bounds(first.row, first.column, columns), to_hsla(first.bg)));
+            window.paint_quad(fill(from_device(device_cell(first.row, first.column, columns)), to_hsla(first.bg)));
         }
     }
 
     // 2. Blocs et traits dessinés en rectangles, retirés du texte.
-    let stroke = (f32::from(metrics.font_size) / 14.0).round().max(1.0);
+    // Géométrie calculée en pixels physiques, sur la cellule alignée.
+    let stroke = (f32::from(metrics.font_size) * scale / 14.0).round().max(1.0);
     for cell in cells.iter_mut() {
-        let Some(glyph) = builtin_glyphs::glyph(
-            cell.c,
-            f32::from(metrics.cell_width) * width(cell) as f32,
-            f32::from(metrics.line_height),
-            stroke,
-        ) else {
+        let bounds = device_cell(cell.row, cell.column, width(cell));
+        let Some(glyph) = builtin_glyphs::glyph(cell.c, bounds.w, bounds.h, stroke) else {
             continue;
         };
-        let origin = cell_origin(cell.row, cell.column);
         let color = Hsla { a: glyph.alpha, ..to_hsla(cell.fg) };
         for r in glyph.rects {
-            window.paint_quad(fill(
-                Bounds::new(point(origin.x + px(r.x), origin.y + px(r.y)), size(px(r.w), px(r.h))),
-                color,
-            ));
+            let r = builtin_glyphs::Rect { x: bounds.x + r.x, y: bounds.y + r.y, ..r };
+            window.paint_quad(fill(from_device(r), color));
         }
         cell.c = ' ';
     }

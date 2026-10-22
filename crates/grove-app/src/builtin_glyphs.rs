@@ -4,7 +4,7 @@
 //! La police ne remplit pas la hauteur d'une ligne (interligne de 1,3) : sans
 //! ce traitement, logos en blocs et cadres présentent des trous entre les lignes.
 
-/// Rectangle en pixels, relatif au coin haut-gauche de la cellule.
+/// Rectangle en pixels physiques, relatif au coin haut-gauche de la cellule.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -19,8 +19,8 @@ pub struct Glyph {
     pub alpha: f32,
 }
 
-/// Géométrie de `c` pour une cellule `w`×`h`, ou `None` si la police s'en charge.
-/// `stroke` : épaisseur d'un trait fin, en pixels.
+/// Géométrie de `c` pour une cellule de `w`×`h` pixels physiques (entiers), ou
+/// `None` si la police s'en charge. `stroke` : épaisseur d'un trait fin.
 pub fn glyph(c: char, w: f32, h: f32, stroke: f32) -> Option<Glyph> {
     block(c, w, h).or_else(|| line(c, w, h, stroke))
 }
