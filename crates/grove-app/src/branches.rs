@@ -394,9 +394,13 @@ impl GroveView {
         let items = picker.items();
 
         let count = items.len();
+        // Seule la liste rétrécit quand la confirmation et ses avertissements
+        // s'ajoutent : le reste du panneau garde sa hauteur et reste visible.
         let list = div()
             .relative()
             .h(ListScroll::height(count))
+            .min_h(ROW_HEIGHT * 3.0)
+            .flex_shrink()
             .child(
                 uniform_list(
                     "branch-list",
@@ -433,6 +437,7 @@ impl GroveView {
             // Première ligne : la question ; les suivantes : les avertissements.
             let mut lines = lines.into_iter();
             div()
+                .flex_none()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -478,15 +483,16 @@ impl GroveView {
             }))
             .child(search_field(&picker.query, "Chercher ou créer une branche…"))
             .child(text_field::input_target(&picker.focus, cx.entity()))
-            .child(div().p_1().child(list))
-            .children(status.map(|s| div().px_3().py_2().text_color(theme::text_muted()).child(s)))
-            .children(picker.error.clone().map(|e| div().px_3().py_2().text_color(theme::danger()).child(e)))
+            .child(div().p_1().flex().flex_col().flex_shrink().min_h_0().child(list))
+            .children(status.map(|s| div().flex_none().px_3().py_2().text_color(theme::text_muted()).child(s)))
+            .children(picker.error.clone().map(|e| div().flex_none().px_3().py_2().text_color(theme::danger()).child(e)))
             .children(confirm)
             .when(self.is_direct(picker.workspace), |d| {
                 let project = picker.workspace.0;
                 d.child(
                     div()
                         .id("promote")
+                        .flex_none()
                         .flex()
                         .items_center()
                         .gap_2()
