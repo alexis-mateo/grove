@@ -72,7 +72,7 @@ impl HeadWatcher {
         let last = Mutex::new(read_head(&dir).ok());
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
-            if !event.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "HEAD")) {
+            if !head_changed(&event) {
                 return;
             }
             let head = match read_head(&dir) {
@@ -89,6 +89,12 @@ impl HeadWatcher {
         watcher.watch(git_dir, RecursiveMode::NonRecursive)?;
         Ok(Self { _watcher: watcher })
     }
+}
+
+/// `HEAD` créée, écrite ou renommée. Les accès (ouverture, fermeture) sont
+/// ignorés : `read_head` ouvre `HEAD`, ce qui relancerait la lecture sans fin.
+fn head_changed(event: &notify::Event) -> bool {
+    !event.kind.is_access() && event.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "HEAD"))
 }
 
 #[cfg(test)]
@@ -128,6 +134,15 @@ mod tests {
         git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "x"]);
         git(dir.path(), &["checkout", "-q", "--detach"]);
         assert!(matches!(read_head(&repo.git_dir).unwrap(), Head::Detached(_)));
+    }
+
+    #[test]
+    fn reading_head_is_not_a_change() {
+        use notify::event::{AccessKind, AccessMode, EventKind, ModifyKind, RenameMode};
+        let on_head = |kind| notify::Event::new(kind).add_path("/repo/.git/HEAD".into());
+        assert!(!head_changed(&on_head(EventKind::Access(AccessKind::Open(AccessMode::Any)))));
+        assert!(!head_changed(&on_head(EventKind::Access(AccessKind::Close(AccessMode::Read)))));
+        assert!(head_changed(&on_head(EventKind::Modify(ModifyKind::Name(RenameMode::To)))));
     }
 
     #[test]
