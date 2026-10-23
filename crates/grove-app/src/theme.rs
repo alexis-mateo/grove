@@ -51,6 +51,10 @@ pub fn text_faint() -> Hsla {
 pub fn accent() -> Hsla {
     rgb(0x4fd18b)
 }
+/// Bleu : liens, distincts du code (accent) dans le texte.
+pub fn link() -> Hsla {
+    rgb(0x6cb6ff)
+}
 /// Texte posé sur l'accent (bouton principal).
 pub fn on_accent() -> Hsla {
     rgb(0x07150d)

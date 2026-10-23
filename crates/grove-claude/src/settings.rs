@@ -72,6 +72,37 @@ fn user_statusline() -> Option<Value> {
     settings.get("statusLine").cloned()
 }
 
+/// Modèle et effort configurés dans les réglages de Claude Code, ceux du projet
+/// l'emportant sur ceux de l'utilisateur (comme Claude Code). Lecture tolérante :
+/// fichier absent ou illisible ignoré.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfiguredDefaults {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+pub fn configured_defaults(cwd: Option<&Path>) -> ConfiguredDefaults {
+    defaults_from(claude_dir().as_deref(), cwd)
+}
+
+fn defaults_from(claude_dir: Option<&Path>, cwd: Option<&Path>) -> ConfiguredDefaults {
+    let mut files: Vec<PathBuf> = claude_dir.map(|dir| dir.join("settings.json")).into_iter().collect();
+    if let Some(cwd) = cwd {
+        files.push(cwd.join(".claude/settings.json"));
+        files.push(cwd.join(".claude/settings.local.json"));
+    }
+    let mut defaults = ConfiguredDefaults::default();
+    for file in files {
+        let Some(settings) = std::fs::read(file).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+            continue;
+        };
+        let text = |key: &str| settings.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        defaults.model = text("model").or(defaults.model);
+        defaults.effort = text("effortLevel").or(defaults.effort);
+    }
+    defaults
+}
+
 /// `~/.claude` (ou `$CLAUDE_CONFIG_DIR`).
 pub(crate) fn claude_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
@@ -87,6 +118,19 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_settings_override_user_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("claude");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::write(claude.join("settings.json"), r#"{"model": "opus", "effortLevel": "high"}"#).unwrap();
+        std::fs::write(project.join(".claude/settings.local.json"), r#"{"effortLevel": "low"}"#).unwrap();
+        let defaults = defaults_from(Some(&claude), Some(&project));
+        assert_eq!(defaults, ConfiguredDefaults { model: Some("opus".into()), effort: Some("low".into()) });
+    }
 
     #[test]
     fn settings_declare_hooks_and_statusline() {

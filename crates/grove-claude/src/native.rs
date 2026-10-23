@@ -29,6 +29,10 @@ pub struct NativeOptions {
     pub resume: Option<String>,
     /// `--permission-mode` : `default`, `acceptEdits`, `plan`…
     pub permission_mode: Option<String>,
+    /// `--model` : alias (`opus`, `sonnet`…) ou nom complet ; `None` : modèle par défaut du compte.
+    pub model: Option<String>,
+    /// `--effort` : `low`, `medium`, `high`, `xhigh`, `max` ; `None` : celui des réglages.
+    pub effort: Option<String>,
     /// Serveur MCP et outil qui répondent aux demandes de permission.
     pub permission_prompt: Option<PermissionPrompt>,
 }
@@ -57,6 +61,12 @@ impl NativeOptions {
         }
         if let Some(mode) = &self.permission_mode {
             arg("--permission-mode", mode);
+        }
+        if let Some(model) = &self.model {
+            arg("--model", model);
+        }
+        if let Some(effort) = &self.effort {
+            arg("--effort", effort);
         }
         if let Some(prompt) = &self.permission_prompt {
             arg("--mcp-config", &prompt.mcp_config);
@@ -185,12 +195,14 @@ mod tests {
             settings: Some("/home/me/grove settings.json".into()),
             resume: Some("abc".into()),
             permission_mode: Some("acceptEdits".into()),
+            model: Some("opus".into()),
+            effort: Some("max".into()),
             ..Default::default()
         };
         assert_eq!(
             options.command_line(),
             "claude -p --input-format stream-json --output-format stream-json --include-partial-messages --verbose \
-             --settings '/home/me/grove settings.json' --resume 'abc' --permission-mode 'acceptEdits'"
+             --settings '/home/me/grove settings.json' --resume 'abc' --permission-mode 'acceptEdits' --model 'opus' --effort 'max'"
         );
     }
 

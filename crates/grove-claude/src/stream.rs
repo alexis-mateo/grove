@@ -23,6 +23,8 @@ pub enum Entry {
     Tool(ToolCall),
     /// Information de Claude Code : refus de permission, erreur, compactage…
     Notice { text: String, error: bool },
+    /// Résumé qui remplace le début de la conversation après un compactage.
+    Summary { text: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,7 +77,10 @@ impl ToolCall {
 pub struct Conversation {
     pub entries: Vec<Entry>,
     pub session_id: Option<String>,
+    /// Modèle annoncé à l'init, puis par chaque réponse (relu aussi dans le transcript).
     pub model: Option<String>,
+    /// Effort annoncé à l'init, si la version de Claude Code le transmet.
+    pub effort: Option<String>,
     pub permission_mode: Option<String>,
     /// Un tour est en cours (prompt envoyé, pas encore de `result`).
     pub busy: bool,
@@ -147,6 +152,9 @@ impl Conversation {
         match str_field("subtype") {
             Some("init") => {
                 self.model = str_field("model").map(str::to_owned);
+                self.effort = str_field("effort")
+                    .or_else(|| v.pointer("/effort/level").and_then(Value::as_str))
+                    .map(str::to_owned);
                 self.permission_mode = str_field("permissionMode").map(str::to_owned);
                 true
             }
@@ -225,6 +233,10 @@ impl Conversation {
         if !streamed {
             self.update_context(message.get("usage"));
         }
+        // `<synthetic>` : messages produits par Claude Code lui-même (erreurs…).
+        if let Some(model) = message.get("model").and_then(Value::as_str).filter(|m| !m.starts_with('<')) {
+            self.model = Some(model.to_owned());
+        }
         let Some(blocks) = message.get("content").and_then(Value::as_array) else { return false };
         let mut changed = false;
         for block in blocks {
@@ -262,6 +274,10 @@ impl Conversation {
     /// Résultats d'outils ; dans un transcript, aussi les prompts de l'utilisateur.
     fn apply_user(&mut self, message: &Value, line: &Value) -> bool {
         let meta = line.get("isMeta").and_then(Value::as_bool) == Some(true);
+        if line.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+            self.entries.push(Entry::Summary { text: content_text(message.get("content")) });
+            return true;
+        }
         match message.get("content") {
             Some(Value::String(text)) if !meta && !is_command_output(text) => {
                 self.entries.push(Entry::User { text: text.clone() });
@@ -325,6 +341,7 @@ impl Conversation {
         self.streaming = self.streaming.map(|i| i + count);
         self.session_id = self.session_id.take().or(earlier.session_id);
         self.model = self.model.take().or(earlier.model);
+        self.effort = self.effort.take().or(earlier.effort);
         self.context_tokens = self.context_tokens.or(earlier.context_tokens);
     }
 
@@ -466,5 +483,22 @@ mod tests {
             Entry::User { text: "Corrige le bug".into() },
             Entry::Assistant { text: "C'est fait.".into() },
         ]);
+    }
+
+    #[test]
+    fn model_comes_from_answers_too() {
+        let c = Conversation::from_transcript(
+            r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}]}}
+{"type":"assistant","message":{"id":"m2","model":"<synthetic>","content":[{"type":"text","text":"erreur"}]}}"#,
+        );
+        assert_eq!(c.model.as_deref(), Some("claude-opus-5-5"));
+    }
+
+    #[test]
+    fn compaction_summary_is_not_a_prompt() {
+        let c = Conversation::from_transcript(
+            r#"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued…"}}"#,
+        );
+        assert_eq!(c.entries, vec![Entry::Summary { text: "This session is being continued…".into() }]);
     }
 }

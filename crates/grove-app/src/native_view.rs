@@ -16,11 +16,37 @@ use serde_json::Value;
 
 use crate::markdown::{self, Block, Inline};
 use crate::theme;
-use crate::ui::{ButtonStyle, Icon, button, hint, icon, icon_button, kbd, tooltip};
+use crate::ui::{ButtonStyle, Icon, button, hint, icon, icon_button, kbd, sized_icon, tooltip};
 
 /// Modes de permission proposés, dans l'ordre de Maj+Tab (comme le TUI).
 /// `bypassPermissions` n'y est pas : trop facile à activer par mégarde.
 const MODES: &[(&str, &str)] = &[("default", "Demander"), ("acceptEdits", "Modifications auto"), ("plan", "Plan")];
+
+/// Modèles proposés : alias de `--model` (`None` : modèle par défaut du compte).
+const MODELS: &[(Option<&str>, &str)] = &[
+    (None, "Par défaut"),
+    (Some("fable"), "Fable"),
+    (Some("opus"), "Opus"),
+    (Some("sonnet"), "Sonnet"),
+    (Some("haiku"), "Haiku"),
+];
+
+/// Niveaux de `--effort` (`None` : celui des réglages de Claude Code).
+const EFFORTS: &[(Option<&str>, &str)] = &[
+    (None, "Par défaut"),
+    (Some("low"), "Faible"),
+    (Some("medium"), "Moyen"),
+    (Some("high"), "Élevé"),
+    (Some("xhigh"), "Très élevé"),
+    (Some("max"), "Max"),
+];
+
+/// Menu ouvert dans le pied du champ de saisie.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Menu {
+    Model,
+    Effort,
+}
 
 /// Lignes d'un résultat d'outil affichées une fois déplié.
 const RESULT_LINES: usize = 40;
@@ -58,8 +84,15 @@ pub struct NativeView {
     expanded: HashSet<String>,
     /// Le processus a été interrompu volontairement : sa fin n'est pas une erreur.
     interrupted: bool,
-    /// Changement de mode demandé pendant un tour : appliqué à la fin du tour.
+    /// Changement de mode ou de modèle demandé pendant un tour : appliqué à la fin du tour.
     restart_after_turn: bool,
+    menu: Option<Menu>,
+    /// Menu fermé par l'appui hors de lui : si c'était sur son bouton, le clic
+    /// qui suit ne doit pas le rouvrir.
+    menu_closed: Option<(Menu, std::time::Instant)>,
+    /// Modèle et effort des réglages de Claude Code : affichés tant que la
+    /// session n'en a pas annoncé ou qu'aucun n'a été choisi.
+    defaults: grove_claude::ConfiguredDefaults,
     focus_handle: FocusHandle,
     scroll: ScrollHandle,
     code_font: SharedString,
@@ -102,6 +135,7 @@ impl NativeView {
             tasks.push(load_history(path, cx));
         }
 
+        let defaults = grove_claude::configured_defaults(options.cwd.as_deref());
         let mut this = Self {
             options,
             process: None,
@@ -117,6 +151,9 @@ impl NativeView {
             expanded: HashSet::new(),
             interrupted: false,
             restart_after_turn: false,
+            menu: None,
+            menu_closed: None,
+            defaults,
             focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             code_font: code_font.into(),
@@ -259,7 +296,25 @@ impl NativeView {
     fn cycle_mode(&mut self, cx: &mut Context<Self>) {
         let index = MODES.iter().position(|(m, _)| *m == self.mode()).map_or(0, |i| (i + 1) % MODES.len());
         self.options.permission_mode = Some(MODES[index].0.to_owned());
-        // Le mode se choisit au lancement : relance au prochain message.
+        self.restart_with_options(cx);
+    }
+
+    fn select(&mut self, menu: Menu, value: Option<&str>, cx: &mut Context<Self>) {
+        self.menu = None;
+        let option = match menu {
+            Menu::Model => &mut self.options.model,
+            Menu::Effort => &mut self.options.effort,
+        };
+        if option.as_deref() != value {
+            *option = value.map(str::to_owned);
+            self.restart_with_options(cx);
+        }
+        cx.notify();
+    }
+
+    /// Mode et modèle se choisissent au lancement : relance au prochain message,
+    /// ou à la fin du tour en cours.
+    fn restart_with_options(&mut self, cx: &mut Context<Self>) {
         if self.conversation.busy {
             self.restart_after_turn = true;
         } else if self.process.is_some() {
@@ -273,6 +328,12 @@ impl NativeView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() && event.keystroke.key == "escape" {
+            self.menu = None;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let keystroke = &event.keystroke;
         let m = &keystroke.modifiers;
         let secondary = m.control || m.platform;
@@ -418,6 +479,10 @@ impl Render for NativeView {
             .iter()
             .enumerate()
             .filter_map(|(index, entry)| self.render_entry(index, entry, cx))
+            // Empilement en bloc, pas en colonne flex : avec de longs textes qui
+            // passent à la ligne, la colonne flex de GPUI réserve des hauteurs trop
+            // petites et les entrées se chevauchent.
+            .map(|entry| div().pb_3().child(entry))
             .collect();
         let empty = entries.is_empty();
         let working = self.conversation.busy && self.permissions.is_empty();
@@ -434,10 +499,8 @@ impl Render for NativeView {
                     .max_w(px(860.0))
                     .mx_auto()
                     .px_6()
-                    .py_4()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
+                    .pt_4()
+                    .pb_1()
                     .when(empty, |d| d.child(empty_state()))
                     .children(entries)
                     .when(working, |d| {
@@ -467,7 +530,8 @@ impl NativeView {
         Some(match entry {
             Entry::User { text } => div()
                 .flex()
-                .justify_end()
+                .flex_col()
+                .items_end()
                 .child(
                     div()
                         .max_w(gpui::relative(0.85))
@@ -486,11 +550,15 @@ impl NativeView {
                 div()
                     .group(group.clone())
                     .relative()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
                     .text_color(theme::text())
-                    .children(markdown::blocks(text).into_iter().map(|block| self.render_block(block)))
+                    .children(
+                        markdown::blocks(text)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, block)| {
+                                div().when(i > 0, |d| d.pt_2()).child(self.render_block(format!("md-{index}-{i}").into(), block))
+                            }),
+                    )
                     .child(
                         div().absolute().top_0().right_0().invisible().group_hover(group, |s| s.visible()).child(
                             icon_button(format!("copy-{index}"), Icon::Copy)
@@ -505,9 +573,6 @@ impl NativeView {
                 let key = format!("thinking-{index}");
                 let open = self.expanded.contains(&key);
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
                     .child(
                         div()
                             .id(SharedString::from(key.clone()))
@@ -521,11 +586,31 @@ impl NativeView {
                             .child("Réflexion"),
                     )
                     .when(open, |d| {
-                        d.child(div().pl_5().italic().text_color(theme::text_muted()).child(text.clone()))
+                        d.child(div().pt_1().pl_5().italic().text_color(theme::text_muted()).child(text.clone()))
                     })
                     .into_any_element()
             }
             Entry::Tool(tool) => self.render_tool(tool, cx),
+            Entry::Summary { text } => {
+                let key = format!("summary-{index}");
+                let open = self.expanded.contains(&key);
+                div()
+                    .child(
+                        div()
+                            .id(SharedString::from(key.clone()))
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(theme::text_faint())
+                            .on_click(cx.listener(move |this, _, _, cx| this.toggle_expanded(key.clone(), cx)))
+                            .child(icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, theme::text_faint()))
+                            .child("Conversation compactée : la suite repart de ce résumé"),
+                    )
+                    .when(open, |d| d.child(div().pt_1().child(self.code_box(text.clone()).text_color(theme::text_muted()))))
+                    .into_any_element()
+            }
             Entry::Notice { text, error } => div()
                 .flex()
                 .items_center()
@@ -538,27 +623,35 @@ impl NativeView {
         })
     }
 
-    fn render_block(&self, block: Block) -> gpui::AnyElement {
+    fn render_block(&self, key: SharedString, block: Block) -> gpui::AnyElement {
         match block {
-            Block::Paragraph(text) => div().child(rich_text(&text)).into_any_element(),
-            Block::Heading(text) => {
-                div().pt_1().font_weight(FontWeight::SEMIBOLD).child(rich_text(&text)).into_any_element()
-            }
+            Block::Paragraph(text) => div().child(rich_text(key, &text)).into_any_element(),
+            Block::Heading(level, text) => div()
+                .pt_1()
+                .font_weight(FontWeight::SEMIBOLD)
+                .map(|d| match level {
+                    1 => d.pt_2().text_lg(),
+                    2 => d.pt_1p5().text_base(),
+                    _ => d,
+                })
+                .child(rich_text(key, &text))
+                .into_any_element(),
             Block::ListItem { marker, depth, text } => div()
                 .flex()
                 .gap_2()
                 .pl(px(16.0 * depth as f32))
                 .child(div().flex_none().text_color(theme::text_muted()).child(marker))
-                .child(div().flex_1().min_w_0().child(rich_text(&text)))
+                .child(div().flex_1().min_w_0().child(rich_text(key, &text)))
                 .into_any_element(),
             Block::Quote(text) => div()
                 .pl_3()
                 .border_l_2()
                 .border_color(theme::border_strong())
                 .text_color(theme::text_muted())
-                .child(rich_text(&text))
+                .child(rich_text(key, &text))
                 .into_any_element(),
             Block::Code(text) => self.code_box(text).into_any_element(),
+            Block::Table(table) => render_table(&key, table),
             Block::Rule => div().h(px(1.0)).bg(theme::border()).into_any_element(),
         }
     }
@@ -614,12 +707,9 @@ impl NativeView {
             });
 
         div()
-            .flex()
-            .flex_col()
-            .gap_1()
             .child(header)
             .when(open, |d| {
-                d.child(div().pl_6().flex().flex_col().gap_1().child(self.tool_input(tool)).children(tool.result.as_ref().map(
+                d.child(div().pt_1().pl_6().child(self.tool_input(tool)).children(tool.result.as_ref().map(
                     |result| {
                         let mut lines: Vec<&str> = result.text.lines().collect();
                         let hidden = lines.len().saturating_sub(RESULT_LINES);
@@ -631,7 +721,7 @@ impl NativeView {
                         if text.is_empty() {
                             text = "(aucune sortie)".into();
                         }
-                        self.code_box(text).when(result.is_error, |d| d.text_color(theme::danger()))
+                        div().pt_1().child(self.code_box(text).when(result.is_error, |d| d.text_color(theme::danger())))
                     },
                 )))
             })
@@ -646,8 +736,6 @@ impl NativeView {
             let added = new.lines().map(|l| (format!("+ {l}"), theme::accent()));
             return self
                 .code_box(String::new())
-                .flex()
-                .flex_col()
                 .children(removed.chain(added).map(|(line, color)| div().text_color(color).child(line)))
                 .into_any_element();
         }
@@ -671,9 +759,6 @@ impl NativeView {
                 .pb_2()
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
                         .p_3()
                         .rounded_lg()
                         .border_1()
@@ -690,9 +775,10 @@ impl NativeView {
                                     d.child(div().text_xs().text_color(theme::text_faint()).child(format!("+ {more} en attente")))
                                 }),
                         )
-                        .child(self.tool_input(&pending.tool))
+                        .child(div().pt_2().child(self.tool_input(&pending.tool)))
                         .child(
                             div()
+                                .pt_2()
                                 .flex()
                                 .gap_2()
                                 .child(button("permission-allow", "Autoriser", ButtonStyle::Primary).on_click(
@@ -718,9 +804,6 @@ impl NativeView {
         let busy = self.conversation.busy;
         let mode = MODES.iter().find(|(m, _)| *m == self.mode()).map_or("Demander", |(_, label)| label);
         let mut details = Vec::new();
-        if let Some(model) = &self.conversation.model {
-            details.push(model.clone());
-        }
         if let Some(cost) = self.conversation.cost_usd {
             details.push(format!("{cost:.2} $"));
         }
@@ -798,12 +881,141 @@ impl NativeView {
                                 .on_click(cx.listener(|this, _, _, cx| this.cycle_mode(cx)))
                                 .child(mode),
                         )
+                        .child(self.render_picker(Menu::Model, cx))
+                        .child(self.render_picker(Menu::Effort, cx))
                         .child(div().flex_1().min_w_0().truncate().child(details.join(" · ")))
                         .child(hint("Maj+Entrée", "nouvelle ligne"))
                         .child(action),
                 ),
         )
     }
+}
+
+impl NativeView {
+    /// Modèle affiché : celui annoncé par Claude, sauf s'il vient d'en être choisi
+    /// un autre (appliqué au prochain message) ; sinon celui des réglages.
+    fn model_label(&self) -> String {
+        let name = |alias: &str| MODELS.iter().find(|(a, _)| *a == Some(alias)).map_or(alias.to_owned(), |(_, n)| (*n).to_owned());
+        match (&self.options.model, &self.conversation.model) {
+            (Some(alias), Some(model)) if model.contains(alias.as_str()) => model_label(model),
+            (Some(alias), _) => name(alias),
+            (None, Some(model)) => model_label(model),
+            (None, None) => self.defaults.model.as_deref().map_or("Modèle par défaut".into(), name),
+        }
+    }
+
+    /// Effort affiché : choisi, sinon annoncé par la session, sinon celui des réglages.
+    fn effort_label(&self) -> String {
+        let effort = self.options.effort.as_ref().or(self.conversation.effort.as_ref()).or(self.defaults.effort.as_ref());
+        match effort {
+            Some(level) => {
+                let name = EFFORTS.iter().find(|(l, _)| *l == Some(level.as_str())).map_or(level.as_str(), |(_, n)| n);
+                format!("Effort {}", name.to_lowercase())
+            }
+            None => "Effort par défaut".into(),
+        }
+    }
+
+    fn render_picker(&self, menu: Menu, cx: &mut Context<Self>) -> impl IntoElement {
+        let (label, hint, options, current) = match menu {
+            Menu::Model => (self.model_label(), "Modèle (appliqué au prochain message)", MODELS, &self.options.model),
+            Menu::Effort => (self.effort_label(), "Niveau d'effort (appliqué au prochain message)", EFFORTS, &self.options.effort),
+        };
+        let open = self.menu == Some(menu);
+        let id = match menu {
+            Menu::Model => "model",
+            Menu::Effort => "effort",
+        };
+        let chip = div()
+            .id(SharedString::from(format!("composer-{id}")))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1p5()
+            .py_0p5()
+            .rounded_md()
+            .cursor_pointer()
+            .text_color(theme::text_muted())
+            .hover(|s| s.bg(theme::hover()))
+            .when(open, |d| d.bg(theme::selected()))
+            .tooltip(tooltip(hint))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let just_closed = this.menu_closed.take().is_some_and(|(m, at)| m == menu && at.elapsed().as_millis() < 500);
+                this.menu = if this.menu == Some(menu) || just_closed { None } else { Some(menu) };
+                cx.notify();
+            }))
+            .child(label)
+            .child(sized_icon(Icon::ChevronDown, px(10.0), theme::text_faint()));
+
+        let items: Vec<_> = options
+            .iter()
+            .enumerate()
+            .map(|(i, &(value, name))| {
+                let selected = current.as_deref() == value;
+                div()
+                    .id((SharedString::from(format!("{id}-option")), i))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_color(theme::text())
+                    .hover(|s| s.bg(theme::hover()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.select(menu, value, cx)))
+                    .child(div().flex_1().child(name))
+                    .when(selected, |d| d.child(icon(Icon::Check, theme::accent())))
+            })
+            .collect();
+
+        div().relative().child(chip).when(open, |d| {
+            d.child(gpui::deferred(
+                div()
+                    .id(SharedString::from(format!("{id}-menu")))
+                    .occlude()
+                    .absolute()
+                    .bottom(px(28.0))
+                    .left_0()
+                    .w(px(180.0))
+                    .p_1()
+                    .flex()
+                    .flex_col()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(theme::border_strong())
+                    .bg(theme::elevated())
+                    .shadow_lg()
+                    .text_sm()
+                    .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.menu_closed = Some((menu, std::time::Instant::now()));
+                        cx.notify();
+                    }))
+                    .children(items),
+            ))
+        })
+    }
+}
+
+/// `claude-opus-5-5` → `Opus 5.5`, `…[1m]` → `… 1M` ; un nom inattendu reste tel quel.
+fn model_label(model: &str) -> String {
+    let (base, window) = match model.split_once('[') {
+        Some((base, window)) => (base, format!(" {}", window.trim_end_matches(']').to_uppercase())),
+        None => (model, String::new()),
+    };
+    let Some(rest) = base.strip_prefix("claude-") else { return model.to_owned() };
+    let mut parts = rest.split('-');
+    let Some(family) = parts.next().filter(|f| f.chars().all(|c| c.is_ascii_alphabetic())) else {
+        return model.to_owned();
+    };
+    // Les dates de version (`20250929`) ne sont pas affichées.
+    let version: Vec<_> = parts.take_while(|p| p.len() <= 2 && p.chars().all(|c| c.is_ascii_digit())).collect();
+    let mut family = family.to_owned();
+    if let Some(first) = family.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    if version.is_empty() { family + &window } else { format!("{family} {}{window}", version.join(".")) }
 }
 
 fn empty_state() -> impl IntoElement {
@@ -847,19 +1059,98 @@ fn composer_text(text: &str, marked: Option<&str>, focused: bool) -> StyledText 
     StyledText::new(full).with_highlights(highlights)
 }
 
-/// Paragraphe avec gras et code en ligne.
-fn rich_text(text: &str) -> StyledText {
+/// Tableau : colonnes proportionnelles à leur contenu le plus long (borné), le
+/// texte des cellules passe à la ligne. Les lignes sont empilées en blocs (cf.
+/// le fil), chaque ligne est une rangée flex aux largeurs fixées d'avance.
+fn render_table(key: &SharedString, table: markdown::Table) -> gpui::AnyElement {
+    let columns = table.header.len();
+    let weights: Vec<f32> = (0..columns)
+        .map(|c| {
+            let longest = std::iter::once(&table.header).chain(&table.rows).map(|row| row[c].chars().count()).max();
+            longest.unwrap_or(0).clamp(4, 40) as f32
+        })
+        .collect();
+    let row = |r: usize, cells: &[String], header: bool| {
+        div()
+            .flex()
+            .when(r > 0, |d| d.border_t_1().border_color(theme::border()))
+            .when(header, |d| d.bg(theme::panel()).font_weight(FontWeight::SEMIBOLD))
+            .children(cells.iter().enumerate().map(|(c, cell)| {
+                let mut cell_div = div()
+                    .flex_basis(px(0.0))
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .when(c > 0, |d| d.border_l_1().border_color(theme::border()))
+                    .map(|d| match table.align[c] {
+                        markdown::Align::Left => d,
+                        markdown::Align::Center => d.text_center(),
+                        markdown::Align::Right => d.text_right(),
+                    });
+                cell_div.style().flex_grow = Some(weights[c]);
+                cell_div.child(rich_text(SharedString::from(format!("{key}-{r}-{c}")), cell))
+            }))
+    };
+    div()
+        .rounded_md()
+        .border_1()
+        .border_color(theme::border_strong())
+        .child(row(0, &table.header, true))
+        .children(table.rows.iter().enumerate().map(|(r, cells)| row(r + 1, cells, false)))
+        .into_any_element()
+}
+
+/// Paragraphe avec gras, code et liens (ouverts au clic).
+fn rich_text(id: impl Into<gpui::ElementId>, text: &str) -> gpui::AnyElement {
     let (text, spans) = markdown::inline(text);
-    let highlights = spans.into_iter().map(|(range, style)| {
-        let style = match style {
-            Inline::Bold => HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() },
-            Inline::Code => HighlightStyle {
-                color: Some(theme::accent()),
-                background_color: Some(theme::selected()),
-                ..Default::default()
-            },
-        };
-        (range, style)
-    });
-    StyledText::new(text).with_highlights(highlights)
+    let mut links = Vec::new();
+    let highlights: Vec<_> = spans
+        .into_iter()
+        .map(|(range, style)| {
+            let style = match style {
+                Inline::Bold => HighlightStyle { font_weight: Some(FontWeight::BOLD), ..Default::default() },
+                Inline::Italic => HighlightStyle { font_style: Some(gpui::FontStyle::Italic), ..Default::default() },
+                Inline::Strike => HighlightStyle {
+                    strikethrough: Some(gpui::StrikethroughStyle { thickness: px(1.0), color: None }),
+                    color: Some(theme::text_muted()),
+                    ..Default::default()
+                },
+                Inline::Code => HighlightStyle {
+                    color: Some(theme::accent()),
+                    background_color: Some(theme::selected()),
+                    ..Default::default()
+                },
+                Inline::Link(url) => {
+                    links.push((range.clone(), url));
+                    HighlightStyle {
+                        color: Some(theme::link()),
+                        underline: Some(gpui::UnderlineStyle { thickness: px(1.0), color: None, wavy: false }),
+                        ..Default::default()
+                    }
+                }
+            };
+            (range, style)
+        })
+        .collect();
+    let styled = StyledText::new(text).with_highlights(highlights);
+    if links.is_empty() {
+        return styled.into_any_element();
+    }
+    let ranges = links.iter().map(|(range, _)| range.clone()).collect();
+    gpui::InteractiveText::new(id, styled)
+        .on_click(ranges, move |index, _, cx| cx.open_url(&links[index].1))
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_labels() {
+        assert_eq!(model_label("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(model_label("claude-sonnet-4-5-20250929"), "Sonnet 4.5");
+        assert_eq!(model_label("claude-haiku-5-5[1m]"), "Haiku 5.5 1M");
+        assert_eq!(model_label("custom-model"), "custom-model");
+    }
 }

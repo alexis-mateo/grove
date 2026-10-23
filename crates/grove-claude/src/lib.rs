@@ -27,5 +27,5 @@ pub use server::{EventServer, Reply};
 pub use session::{
     ClaudeStatus, NeedsInputReason, RateLimits, RateWindow, Session, SessionMetrics, Transition,
 };
-pub use settings::{user_statusline_command, write_settings};
+pub use settings::{ConfiguredDefaults, configured_defaults, user_statusline_command, write_settings};
 pub use stream::{Conversation, Entry, ToolCall, ToolResult};

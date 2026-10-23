@@ -510,9 +510,11 @@ Avec `--include-partial-messages`, chaque bloc arrive en morceaux (`stream_event
 
 État (première itération) :
 
-- fait : streaming, markdown simple (titres, listes, code, citations, gras, code en ligne ; tableaux en chasse fixe), appels d'outils repliables avec résultat (40 lignes), différence `old_string` / `new_string` dans le détail et dans la demande de permission, copie d'une réponse, historique des prompts, coût cumulé et tokens de contexte, mode de permission (`Maj+Tab`) ;
+- fait : streaming, markdown simple (titres, listes, code, citations, gras, code en ligne), appels d'outils repliables avec résultat (40 lignes), différence `old_string` / `new_string` dans le détail et dans la demande de permission, copie d'une réponse, historique des prompts, coût cumulé et tokens de contexte, mode de permission (`Maj+Tab`), liens cliquables (`[texte](url)` et URL nues, `http(s)` seulement), résumé de compactage replié (`isCompactSummary`) au lieu d'un message, **sélecteurs de modèle et d'effort** dans le pied du champ de saisie (modèle : défaut, Fable, Opus, Sonnet, Haiku, `--model` ; effort : défaut, low à max, `--effort`), appliqués au prochain message par relance avec `--resume`, comme le mode de permission. Valeurs affichées : celle choisie, sinon celle de la session (modèle de chaque réponse, relu aussi dans le transcript ; effort de l'init si Claude Code le transmet), sinon celle des réglages de Claude Code (`model`, `effortLevel` ; projet puis utilisateur) ;
+- markdown : titres hiérarchisés, italique (hors des mots : `snake_case` et `2*3*4` restent tels quels), barré, cases à cocher, citations sur plusieurs lignes, images (texte alternatif en lien), **tableaux** (alignements GFM, colonnes proportionnelles au contenu, cellules qui passent à la ligne) ;
+- mise en page du fil en blocs empilés et non en colonne flex : la colonne flex de GPUI réservait des hauteurs trop petites aux longs textes qui passent à la ligne, et les messages se chevauchaient ;
 - interruption : `SIGINT` au groupe du processus, la session reprend au message suivant (`--resume`). L'interruption sans arrêt passerait par le protocole de contrôle (repli du §10.2) ;
-- à faire : coloration syntaxique, images, `@fichier`, glisser-déposer, jauge de contexte en pourcentage (la taille de la fenêtre n'est pas dans le flux), sélection du texte du fil, limites d'usage depuis `rate_limit_event` (unité de `utilization` à vérifier).
+- à faire : modèle, effort et mode mémorisés dans l'onglet, coloration syntaxique, images, `@fichier`, glisser-déposer, jauge de contexte en pourcentage (la taille de la fenêtre n'est pas dans le flux), sélection du texte du fil, limites d'usage depuis `rate_limit_event` (unité de `utilization` à vérifier).
 
 ### 10.4 Bascule de vue
 

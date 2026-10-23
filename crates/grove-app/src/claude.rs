@@ -164,6 +164,8 @@ impl GroveView {
             settings: self.claude.settings_file.clone(),
             resume: session_id.map(str::to_owned),
             permission_mode: None,
+            model: None,
+            effort: None,
             permission_prompt,
         }
     }
