@@ -220,7 +220,9 @@ infobulle sur l'icône rappelle le type et le chemin. À droite : l'état Claude
 agrégé (pastille ambre « attend », verte « en cours »), sinon le nombre
 d'onglets s'il y en a plusieurs. La sidebar se redimensionne par son bord
 droit (double-clic : largeur par défaut) ; sa largeur est conservée dans
-`state.json`.
+`state.json`. Les projets se réordonnent par glisser-déposer de leur ligne :
+déposé sur un autre projet (sa ligne ou ses espaces), le projet glissé prend
+sa place. L'ordre est celui de `state.json`.
 
 ---
 
@@ -233,10 +235,12 @@ droit (double-clic : largeur par défaut) ; sa largeur est conservée dans
 | **2 — Claude, mode terminal** | Onglet Claude = `claude` dans un PTY, hooks, badges d'état, notifications, métriques | Pilotage multi-sessions |
 | **3 — Worktrees** | Création, setup, promotion, nettoyage des worktrees | Travail parallèle isolé |
 | **4 — Claude, interface native** | Vue native stream-json, bascule terminal ↔ native | « Petite interface » Claude |
-| **5 — GitHub PR / CI** | PR liée à la branche, statut CI, review | |
-| **6 — GitHub Projects** | Tableau, liaison ticket ↔ worktree | |
+| **5 — Profils et paramètres** | Profils de terminal (SSH préconfigurés…), page Paramètres, liste des raccourcis | Terminaux distants et réglages sans éditer le TOML |
+| **6 — GitHub PR / CI** | PR liée à la branche, statut CI, review | |
+| **7 — GitHub Projects** | Tableau, liaison ticket ↔ worktree | |
+| **8 — Recette des stories** | Claude joue la procédure de test d'une story | Recette assistée, compte-rendu sur le ticket |
 
-Les phases 3 et 4 sont indépendantes et peuvent être interverties.
+Les phases 3 et 4 sont indépendantes et peuvent être interverties. La phase 5 ne dépend que du socle : elle peut passer avant ou après la 4. La phase 8 suppose la liaison ticket ↔ espace de travail (phase 7).
 
 ---
 
@@ -263,7 +267,7 @@ Exigences minimales pour un usage quotidien (et pour faire tourner le TUI de Cla
 - Ajouter un projet = choisir un dossier. Détection git automatique.
 - Chaque projet a au minimum un espace de travail **Direct** (le dossier lui-même).
 - Les dossiers non-git sont supportés : les fonctionnalités git sont simplement masquées.
-- Sidebar : projets repliables → espaces de travail → nombre d'onglets et état.
+- Sidebar : projets repliables et réordonnables (glisser-déposer) → espaces de travail → nombre d'onglets et état.
 - Onglets par espace de travail : nouveau terminal (cwd = chemin de l'espace de travail), fermer, renommer, réordonner.
 - Affichage de la branche courante en mode direct, **mise à jour en direct** via la surveillance de `.git/HEAD`.
 
@@ -458,7 +462,7 @@ Action « déplacer ce travail dans un worktree » :
   - **Supprimer le worktree** (`--force` après avertissement s'il reste des modifications) ;
   - **Supprimer worktree et branche** : `git branch -d` ; une branche non fusionnée est conservée, avec un message ;
   - suppression de la branche distante : plus tard.
-- Phase 5 : suggestion automatique de nettoyage quand la PR associée est mergée.
+- Phase 6 : suggestion automatique de nettoyage quand la PR associée est mergée.
 - Détection des worktrees créés hors de l'app (`git worktree list`) → import dans la sidebar, au démarrage et à l'ajout d'un projet. Cela inclut les worktrees de Claude Code (`.claude/worktrees/`). Les worktrees dont le dossier a disparu (`prunable`) sont ignorés.
 
 ### 9.5 Infos git par espace de travail
@@ -525,9 +529,69 @@ Avec `--include-partial-messages`, chaque bloc arrive en morceaux (`stream_event
 
 ---
 
-## 11. Phases 5–6 : GitHub
+## 11. Phase 5 : profils de terminal et paramètres
 
-### 11.1 Pull requests et CI (phase 5)
+### 11.1 Profils de terminal
+
+Aujourd'hui un onglet terminal lance toujours le shell (`[terminal] shell`, sinon `$SHELL`). Un **profil** décrit ce qu'un onglet lance :
+
+- nom, icône, et la commande : shell local (défaut), **SSH**, ou commande libre (`docker exec -it app bash`, `kubectl exec…`, `psql`…) ;
+- dossier de départ (par défaut : l'espace de travail), variables d'environnement ;
+- profils **globaux** (`config.toml`) et **par projet** (`.grove.toml`, versionnable : le profil « staging » d'un repo est partagé avec l'équipe).
+
+```toml
+[[terminal.profiles]]
+name = "staging"
+kind = "ssh"
+host = "staging-web-1"           # alias de ~/.ssh/config ou nom d'hôte
+user = "deploy"                  # optionnel, comme port, identity, jump
+remote_command = "cd /var/www/app && exec $SHELL -l"
+
+[[terminal.profiles]]
+name = "db"
+command = "docker compose exec db psql -U app"
+```
+
+#### SSH
+
+- Grove lance la **CLI `ssh` du système** dans le PTY, sans bibliothèque SSH embarquée : `~/.ssh/config`, l'agent, les clés, `known_hosts` et `ProxyJump` fonctionnent comme dans un terminal ordinaire.
+- **Profils préfaits** : les entrées `Host` de `~/.ssh/config` (hors motifs `*`, `?`) sont proposées comme profils prêts à l'emploi, sans les recopier ; un profil Grove peut en surcharger un (utilisateur, commande distante).
+- Champs d'un profil SSH : hôte, utilisateur, port, clé (`-i`), rebond (`-J`), options `-o` (`ServerAliveInterval`…), commande distante (`-t` ajouté).
+- Grove **ne stocke aucun mot de passe** ni passphrase : `ssh` les demande dans le terminal.
+- Onglet SSH : icône serveur, titre = nom du profil. L'OSC 7 renvoyé par le shell distant désigne un dossier distant : il n'est pas repris comme dossier de départ des onglets locaux.
+- Connexion fermée : bandeau « Connexion fermée (code n) » avec **Reconnecter**.
+- Au redémarrage, les onglets SSH sont restaurés **sans se connecter** (bouton « Se connecter ») : pas de rafale de connexions ni de demandes de passphrase ; option `reconnect = "auto"` par profil.
+
+#### Ouvrir un onglet avec un profil
+
+- `Ctrl+Shift+T` et le `+` de la barre d'onglets : profil par défaut (`[terminal] default_profile`, sinon le shell).
+- Flèche à côté du `+` (ou clic droit) : liste des profils, avec recherche, comme le sélecteur de branches.
+- L'onglet garde la référence de son profil (`TabKind::Terminal { profile: Option<String> }`), persistée dans `state.json`.
+
+### 11.2 Page Paramètres
+
+- Ouverte par `Ctrl+,` ou une icône d'engrenage en pied de sidebar ; elle remplace la zone des onglets (la sidebar reste visible), `Échap` la ferme.
+- Sections à gauche, contenu à droite :
+  - **Général** : police, taille, thème (plus tard) ;
+  - **Terminal** : shell, scrollback, profil par défaut ;
+  - **Profils** : liste, création, édition, duplication, profils importés de `~/.ssh/config` (lecture seule, « personnaliser » en crée une copie) ;
+  - **Claude** : commande, vue par défaut, notifications, API d'usage (avec l'avertissement du §8.5), skills de review (phase 6) ;
+  - **Raccourcis clavier** (§11.3).
+- `config.toml` reste la **source de vérité** : la page l'écrit avec `toml_edit` pour garder commentaires et mise en forme, et un bouton l'ouvre dans l'éditeur. Le fichier est surveillé (`notify`) : une modification à la main s'applique sans redémarrer.
+- Un réglage de projet (`.grove.toml`) s'affiche avec sa provenance ; la page ne l'écrit pas dans le repo sans le dire.
+
+### 11.3 Raccourcis clavier
+
+- Liste de tous les raccourcis, groupés (onglets, espaces de travail, branches, Claude, sidebar, terminal), avec recherche par action ou par touche.
+- Générée depuis les `KeyBinding` enregistrés : une seule source, la liste ne peut pas diverger du comportement.
+- Accessible depuis les Paramètres ; un raccourci direct reste à choisir, sans masquer une touche utile aux programmes du terminal (`Ctrl+/` envoie `^_`, utilisé par nano ou emacs).
+- Plus tard : personnalisation (`[keys]` dans `config.toml`), avec détection des conflits.
+
+---
+
+## 12. Phases 6–7 : GitHub
+
+### 12.1 Pull requests et CI (phase 6)
 
 - Détection du remote GitHub depuis `GitInfo.remote`.
 - Par espace de travail : PR associée à la branche (état, review, checks).
@@ -563,7 +627,7 @@ skill = "/morty:implement"       # skill lancé pour traiter les commentaires re
 - Détection des changements : polling léger (ETag) des PR suivies, notification « nouvelles réponses sur la PR #123 ».
 - Authentification : `gh auth token` dans un premier temps, OAuth device flow ensuite.
 
-### 11.2 GitHub Projects (phase 6)
+### 12.2 GitHub Projects (phase 7)
 
 - Vue tableau d'un Project v2 (GraphQL).
 - Depuis un ticket : créer le worktree et la branche (convention de nommage configurable, ex. `feat-<issue>-<slug>`) et ouvrir une session Claude avec le ticket en contexte.
@@ -571,11 +635,38 @@ skill = "/morty:implement"       # skill lancé pour traiter les commentaires re
 
 ---
 
-## 12. Questions ouvertes
+## 13. Phase 8 : recette des stories
+
+Faire tester une story par Claude en suivant la **procédure de test** écrite dans le ticket.
+
+- **Source** : la story liée à l'espace de travail (phase 7) ou choisie dans le tableau. La procédure est la section dont le titre correspond à l'un de ceux configurés (« Procédure de test », « Comment tester », « Test plan »…), dans le ticket puis dans la PR ; à défaut, le corps entier, en le signalant.
+- **Action « Tester la story »** : ouvre un onglet Claude dans l'espace de la branche (worktree créé si besoin, phase 3) et lance un skill configurable avec l'URL du ticket, la procédure et les critères d'acceptation en contexte.
+- **Environnement** : commandes de préparation de `.grove.toml` (`[test] setup`, ex. démarrer le serveur de dev) dans un onglet dédié avant la session ; les profils de terminal (§11.1, ex. SSH vers la recette) sont utilisables par la procédure.
+- **Compte-rendu par étape** : réussie, échouée, bloquée, non jouée, avec les preuves (sortie de commande, capture d'écran si un navigateur est piloté). Affiché dans un panneau de la story, persisté avec le lien story ↔ session.
+- **Relancer le test** après de nouveaux commits : reprend la même session (`--resume`) avec ce qui a changé.
+- **Publication** : commentaire sur le ticket ou la PR, et passage éventuel au statut suivant (« Testé »), **seulement après validation**.
+- **Recette manuelle** : la procédure s'affiche aussi en liste à cocher, pour les étapes que l'utilisateur fait lui-même ; Claude peut être appelé sur une étape précise.
+- **Garde-fous** :
+  - le texte du ticket est transmis comme **données à tester**, pas comme des consignes : n'importe qui pouvant écrire dans le ticket, il ne doit pas élargir ce que la session a le droit de faire ;
+  - les permissions de Claude Code restent actives (jamais `--dangerously-skip-permissions`) ;
+  - une étape qui vise la production ou détruit des données demande une confirmation explicite.
+
+```toml
+[github.test]
+skill = "/morty:qa"                                   # {{issue_url}} ajoutée en argument
+sections = ["Procédure de test", "Comment tester", "Test plan"]
+
+[test]                                                # .grove.toml
+setup = ["docker compose up -d", "npm run dev"]
+```
+
+---
+
+## 14. Questions ouvertes
 
 - **Nom** du projet.
 - ~~**GPUI vs iced**~~ : GPUI retenu (`gpui` 0.2.2 de crates.io, épinglé), validé par le spike.
-- **Runtime async** : exécuteur de GPUI seul pour l'instant (threads dédiés pour le PTY, le socket et `notify`). `tokio` à réévaluer avec `octocrab` (phase 5).
+- **Runtime async** : exécuteur de GPUI seul pour l'instant (threads dédiés pour le PTY, le socket et `notify`). `tokio` à réévaluer avec `octocrab` (phase 6).
 - ~~**Persistance**~~ : JSON retenu pour la v1 (cf. §4).
 - **Distribution Linux** : AppImage, `.deb`, AUR ? Flatpak compliqué (sandbox incompatible avec PTY, git et `claude` du système).
 - **Restauration du contenu des terminaux** au redémarrage (sérialisation du scrollback) : v2 ?
@@ -583,7 +674,7 @@ skill = "/morty:implement"       # skill lancé pour traiter les commentaires re
 
 ---
 
-## 13. Hors périmètre (pour l'instant)
+## 15. Hors périmètre (pour l'instant)
 
 - Réimplémentation de la boucle d'agent avec l'API Anthropic.
 - Support d'autres agents (Codex, Gemini CLI…). L'architecture ne doit pas l'empêcher, mais ce n'est pas un objectif.
@@ -593,7 +684,7 @@ skill = "/morty:implement"       # skill lancé pour traiter les commentaires re
 
 ---
 
-## 14. Risques
+## 16. Risques
 
 | Risque | Impact | Mitigation |
 |---|---|---|
