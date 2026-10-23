@@ -67,6 +67,17 @@ impl State {
         Some(project)
     }
 
+    /// Déplace un projet à la position `to` de la sidebar.
+    pub fn move_project(&mut self, id: ProjectId, to: usize) -> bool {
+        let Some(from) = self.projects.iter().position(|p| p.id == id) else {
+            return false;
+        };
+        let project = self.projects.remove(from);
+        let to = to.min(self.projects.len());
+        self.projects.insert(to, project);
+        from != to
+    }
+
     pub fn project(&self, id: ProjectId) -> Option<&Project> {
         self.projects.iter().find(|p| p.id == id)
     }
@@ -122,6 +133,24 @@ mod tests {
         assert_eq!(state.active_workspace.unwrap().0, b);
         state.remove_project(b);
         assert_eq!(state.active_workspace, None);
+    }
+
+    #[test]
+    fn moving_project_reorders_list() {
+        let mut state = State::default();
+        let a = state.add_project(Path::new("/a"));
+        let b = state.add_project(Path::new("/b"));
+        let c = state.add_project(Path::new("/c"));
+        let order = |state: &State| state.projects.iter().map(|p| p.id).collect::<Vec<_>>();
+
+        assert!(state.move_project(a, 2));
+        assert_eq!(order(&state), [b, c, a]);
+        assert!(state.move_project(a, 0));
+        assert_eq!(order(&state), [a, b, c]);
+        assert!(!state.move_project(b, 1));
+        assert!(!state.move_project(c, 99));
+        assert!(state.move_project(a, 99));
+        assert_eq!(order(&state), [b, c, a]);
     }
 
     #[test]

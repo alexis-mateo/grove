@@ -5,7 +5,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use grove_claude::ClaudeStatus;
-use grove_core::{Project, Workspace, WorkspaceKind};
+use grove_core::{Project, ProjectId, Workspace, WorkspaceKind};
 
 use crate::grove_view::{AddProject, GroveView, ToggleSidebar};
 use crate::marquee::marquee;
@@ -28,6 +28,32 @@ pub struct DraggedSidebar;
 impl Render for DraggedSidebar {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         gpui::Empty
+    }
+}
+
+/// Projet en cours de glisser-déposer, pour réordonner la sidebar.
+#[derive(Clone)]
+pub struct DraggedProject {
+    project: ProjectId,
+    name: SharedString,
+}
+
+impl Render for DraggedProject {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h(px(28.0))
+            .px_3()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .bg(theme::selected())
+            .border_1()
+            .border_color(theme::accent().opacity(0.6))
+            .shadow_lg()
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::text())
+            .child(self.name.clone())
     }
 }
 
@@ -69,7 +95,8 @@ impl GroveView {
             .state
             .projects
             .iter()
-            .map(|project| self.render_project(project, cx))
+            .enumerate()
+            .map(|(index, project)| self.render_project(index, project, cx))
             .collect();
 
         div()
@@ -156,7 +183,7 @@ impl GroveView {
         }));
     }
 
-    fn render_project(&self, project: &Project, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_project(&self, index: usize, project: &Project, cx: &mut Context<Self>) -> gpui::AnyElement {
         let id = project.id;
         let is_git = project.workspaces.iter().any(|w| self.git.contains_key(&w.id));
         let group: SharedString = format!("project-{id}").into();
@@ -173,6 +200,10 @@ impl GroveView {
             .hover(|s| s.bg(theme::hover()))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_collapsed(id, cx)))
+            .on_drag(
+                DraggedProject { project: id, name: project.name.clone().into() },
+                |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            )
             .child(sized_icon(
                 if project.collapsed { Icon::ChevronRight } else { Icon::ChevronDown },
                 px(12.0),
@@ -212,10 +243,20 @@ impl GroveView {
                     })),
             );
 
+        // Tout le bloc (projet et ses espaces) reçoit le dépôt : le projet glissé
+        // prend sa place.
         div()
+            .id(SharedString::from(format!("project-{id}")))
             .flex()
             .flex_col()
             .gap_px()
+            .rounded_md()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .drag_over::<DraggedProject>(|s, _, _, _| s.bg(theme::hover()).border_color(theme::accent().opacity(0.5)))
+            .on_drop(cx.listener(move |this, dragged: &DraggedProject, _, cx| {
+                this.move_project_to(dragged.project, index, cx);
+            }))
             .child(row)
             .when(!project.collapsed, |d| {
                 let rows: Vec<_> =

@@ -395,6 +395,13 @@ impl GroveView {
         }
     }
 
+    pub(crate) fn move_project_to(&mut self, project: ProjectId, index: usize, cx: &mut Context<Self>) {
+        if self.state.move_project(project, index) {
+            self.save();
+            cx.notify();
+        }
+    }
+
     pub(crate) fn start_rename(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         // Nom actuel, sélectionné : la saisie le remplace.
         let field = TextField::selected(self.tab_label(tab, cx).to_string());
