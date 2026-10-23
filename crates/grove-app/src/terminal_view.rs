@@ -41,6 +41,9 @@ pub struct TerminalView {
     mouse_position: Option<Point<Pixels>>,
     /// Lien sous la souris, Ctrl enfoncé : souligné, ouvert au clic.
     hovered_link: Option<Link>,
+    /// Ctrl+clic sur un lien en cours : son relâchement n'est pas transmis au
+    /// programme, qui ouvrirait le lien une seconde fois (TUI de Claude Code).
+    link_click: bool,
     /// Texte en cours de composition (touche morte, méthode de saisie), affiché au curseur.
     marked_text: Option<String>,
     /// Textures des images du protocole graphique de kitty.
@@ -114,6 +117,7 @@ impl TerminalView {
             last_motion: None,
             mouse_position: None,
             hovered_link: None,
+            link_click: false,
             marked_text: None,
             images: Rc::default(),
             _events: events,
@@ -223,11 +227,14 @@ impl TerminalView {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
+        // Relâchement précédent hors du terminal : jamais reçu.
+        self.link_click = false;
         // Ctrl+clic sur un lien : prioritaire sur le reporting souris du programme.
         if event.button == MouseButton::Left && event.modifiers.control {
             let (column, row) = self.cell_at(event.position);
             if let Some(link) = self.terminal.link_at(row, column) {
                 cx.open_url(&link.uri);
+                self.link_click = true;
                 cx.stop_propagation();
                 return;
             }
@@ -239,6 +246,10 @@ impl TerminalView {
     }
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.button == MouseButton::Left && std::mem::take(&mut self.link_click) {
+            cx.stop_propagation();
+            return;
+        }
         if self.reports_mouse(&event.modifiers) {
             self.report_button(event.button, Action::Release, event.position, &event.modifiers);
             cx.stop_propagation();
