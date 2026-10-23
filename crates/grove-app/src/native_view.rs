@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, FontWeight, HighlightStyle, KeyDownEvent, Pixels, Point, ScrollHandle, SharedString, StyledText,
-    Task, UTF16Selection, Window, canvas, div, prelude::*, px,
+    Focusable, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListOffset, ListState, Pixels, Point,
+    SharedString, StyledText, Task, UTF16Selection, Window, canvas, div, list, prelude::*, px,
 };
 use grove_claude::{Conversation, Entry, NativeEvent, NativeOptions, NativeProcess, Reply, ToolCall};
 use serde_json::Value;
@@ -46,6 +46,21 @@ const EFFORTS: &[(Option<&str>, &str)] = &[
 enum Menu {
     Model,
     Effort,
+}
+
+/// Hauteur rendue au-delà de la zone visible, pour que le défilement ne
+/// découvre pas de messages encore vides.
+const OVERDRAW: Pixels = px(800.0);
+
+/// Ce qui, dans une entrée, change son affichage : quand l'empreinte change,
+/// la liste remesure l'entrée. Pas de hachage du contenu : la longueur suffit
+/// pour le texte qui arrive en morceaux.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Fingerprint {
+    kind: u8,
+    len: usize,
+    extra: usize,
+    open: bool,
 }
 
 /// Lignes d'un résultat d'outil affichées une fois déplié.
@@ -94,7 +109,10 @@ pub struct NativeView {
     /// session n'en a pas annoncé ou qu'aucun n'a été choisi.
     defaults: grove_claude::ConfiguredDefaults,
     focus_handle: FocusHandle,
-    scroll: ScrollHandle,
+    /// Fil virtualisé : seuls les messages visibles sont construits et mesurés.
+    list: ListState,
+    /// Empreintes des entrées au dernier [`Self::sync_list`].
+    fingerprints: Vec<Fingerprint>,
     code_font: SharedString,
     _tasks: Vec<Task<()>>,
 }
@@ -112,15 +130,13 @@ impl NativeView {
                     batch.push(event);
                 }
                 let alive = this.update(cx, |this, cx| {
-                    let at_bottom = this.at_bottom();
+                    // Collée en bas, la liste suit les nouveaux messages d'elle-même.
                     for (generation, event) in batch {
                         if generation == this.generation {
                             this.on_process_event(event, cx);
                         }
                     }
-                    if at_bottom {
-                        this.scroll.scroll_to_bottom();
-                    }
+                    this.sync_list();
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -155,7 +171,8 @@ impl NativeView {
             menu_closed: None,
             defaults,
             focus_handle: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            list: ListState::new(0, ListAlignment::Bottom, OVERDRAW),
+            fingerprints: Vec::new(),
             code_font: code_font.into(),
             _tasks: tasks,
         };
@@ -190,6 +207,7 @@ impl NativeView {
 
     fn notice(&mut self, text: String, error: bool) {
         self.conversation.entries.push(Entry::Notice { text, error });
+        self.sync_list();
     }
 
     fn on_process_event(&mut self, event: NativeEvent, cx: &mut Context<Self>) {
@@ -231,7 +249,7 @@ impl NativeView {
             return;
         }
         self.permissions.push(PendingPermission { tool, reply });
-        self.scroll.scroll_to_bottom();
+        self.scroll_to_bottom();
         cx.notify();
     }
 
@@ -277,7 +295,8 @@ impl NativeView {
         }
         self.history_index = None;
         self.composer.clear();
-        self.scroll.scroll_to_bottom();
+        self.sync_list();
+        self.scroll_to_bottom();
         cx.notify();
     }
 
@@ -323,8 +342,41 @@ impl NativeView {
         cx.notify();
     }
 
-    fn at_bottom(&self) -> bool {
-        -self.scroll.offset().y >= self.scroll.max_offset().height - px(32.0)
+    fn scroll_to_bottom(&self) {
+        self.list.scroll_to(ListOffset { item_ix: self.list.item_count(), offset_in_item: px(0.0) });
+    }
+
+    fn fingerprint(&self, index: usize, entry: &Entry) -> Fingerprint {
+        let print = |kind, len, extra, open| Fingerprint { kind, len, extra, open };
+        match entry {
+            Entry::User { text } => print(0, text.len(), 0, false),
+            Entry::Assistant { text } => print(1, text.len(), 0, false),
+            Entry::Thinking { text } => print(2, text.len(), 0, self.expanded.contains(&format!("thinking-{index}"))),
+            Entry::Tool(tool) => {
+                let input = match &tool.input {
+                    Value::Object(map) => map.len(),
+                    Value::Null => 0,
+                    _ => 1,
+                };
+                let result = tool.result.as_ref().map_or(0, |r| r.text.len() + 1 + usize::from(r.is_error));
+                print(3, tool.summary().len() + input, result, self.expanded.contains(&tool.id))
+            }
+            Entry::Notice { text, error } => print(4, text.len(), usize::from(*error), false),
+            Entry::Summary { text } => print(5, text.len(), 0, self.expanded.contains(&format!("summary-{index}"))),
+        }
+    }
+
+    /// Signale à la liste les entrées à remesurer : à partir de la première dont
+    /// l'empreinte a changé (en pratique, les dernières).
+    fn sync_list(&mut self) {
+        let prints: Vec<_> =
+            self.conversation.entries.iter().enumerate().map(|(i, e)| self.fingerprint(i, e)).collect();
+        let old = self.fingerprints.len();
+        let first = prints.iter().zip(&self.fingerprints).position(|(a, b)| a != b).unwrap_or(old.min(prints.len()));
+        if first < old || first < prints.len() {
+            self.list.splice(first..old, prints.len() - first);
+        }
+        self.fingerprints = prints;
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -386,6 +438,7 @@ impl NativeView {
         if !self.expanded.remove(&key) {
             self.expanded.insert(key);
         }
+        self.sync_list();
         cx.notify();
     }
 }
@@ -400,7 +453,10 @@ fn load_history(path: Option<PathBuf>, cx: &mut Context<NativeView>) -> Task<()>
         let Some(earlier) = read.await else { return };
         let _ = this.update(cx, |this, cx| {
             this.conversation.prepend_history(earlier);
-            this.scroll.scroll_to_bottom();
+            // Tout le fil change d'indices : on repart de zéro, collé en bas.
+            this.fingerprints.clear();
+            this.list.reset(0);
+            this.sync_list();
             cx.notify();
         });
     })
@@ -473,40 +529,41 @@ impl EntityInputHandler for NativeView {
 
 impl Render for NativeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let entries: Vec<_> = self
-            .conversation
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| self.render_entry(index, entry, cx))
-            // Empilement en bloc, pas en colonne flex : avec de longs textes qui
-            // passent à la ligne, la colonne flex de GPUI réserve des hauteurs trop
-            // petites et les entrées se chevauchent.
-            .map(|entry| div().pb_3().child(entry))
-            .collect();
-        let empty = entries.is_empty();
+        let empty = self.conversation.entries.is_empty();
         let working = self.conversation.busy && self.permissions.is_empty();
+        let column = || div().w_full().max_w(px(860.0)).mx_auto().px_6();
 
-        let thread = div()
-            .id("native-thread")
+        let thread = if empty {
+            div().flex_1().min_h_0().child(column().child(empty_state())).into_any_element()
+        } else {
+            list(
+                self.list.clone(),
+                cx.processor(move |this, index: usize, _, cx| {
+                    let Some(entry) = this.conversation.entries.get(index) else { return div().into_any_element() };
+                    // Chaque message est mesuré seul, à la largeur de la liste. Pas de
+                    // colonne flex à l'intérieur : avec de longs textes qui passent à la
+                    // ligne, elle réserve des hauteurs trop petites (chevauchements).
+                    match this.render_entry(index, entry, cx) {
+                        // Enveloppe pleine largeur : l'élément racine ne peut pas se centrer seul.
+                        Some(element) => div()
+                            .w_full()
+                            .child(column().when(index == 0, |d| d.pt_4()).pb_3().child(element))
+                            .into_any_element(),
+                        None => div().into_any_element(),
+                    }
+                }),
+            )
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(860.0))
-                    .mx_auto()
-                    .px_6()
-                    .pt_4()
-                    .pb_1()
-                    .when(empty, |d| d.child(empty_state()))
-                    .children(entries)
-                    .when(working, |d| {
-                        d.child(div().text_sm().text_color(theme::text_faint()).child("Claude travaille…  (Échap : interrompre)"))
-                    }),
-            );
+            .into_any_element()
+        };
+        let working = working.then(|| {
+            column()
+                .pb_2()
+                .text_sm()
+                .text_color(theme::text_faint())
+                .child("Claude travaille…  (Échap : interrompre)")
+        });
 
         let focused = self.focus_handle.is_focused(window);
         div()
@@ -520,6 +577,7 @@ impl Render for NativeView {
             .bg(theme::background())
             .text_sm()
             .child(thread)
+            .children(working)
             .children(self.render_permission(cx))
             .child(self.render_composer(focused, cx))
     }
