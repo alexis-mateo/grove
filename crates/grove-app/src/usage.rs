@@ -1,7 +1,9 @@
 //! Limites d'usage du compte Claude (fenêtre de 5 h, semaine), en bas de la sidebar.
 //!
 //! Les données arrivent avec la statusline de n'importe quelle session : ce
-//! sont des limites de compte, la dernière valeur reçue fait foi. Claude Code ne
+//! sont des limites de compte, mais une session restée inactive renvoie à
+//! chaque rafraîchissement les valeurs de sa dernière réponse. Les valeurs
+//! reçues sont donc fusionnées fenêtre par fenêtre ([`merge`]). Claude Code ne
 //! les transmet qu'après la première réponse d'une session : les dernières
 //! valeurs connues sont donc conservées dans `usage.json` pour être affichées
 //! dès le démarrage. Aucun appel à une API d'Anthropic (specs §8.5).
@@ -96,6 +98,10 @@ impl Usage {
 
     /// Enregistre de nouvelles limites. Renvoie le seuil franchi s'il faut alerter.
     pub fn update(&mut self, limits: RateLimits) -> Option<f64> {
+        let limits = match &self.limits {
+            Some(known) => merge(known, limits),
+            None => limits,
+        };
         let crossed = limits.five_hour.and_then(|w| {
             let threshold = ALERT_THRESHOLDS.iter().rev().find(|t| w.used_percent >= **t).copied()?;
             // Une alerte par seuil et par fenêtre (identifiée par sa date de remise à zéro).
@@ -114,6 +120,33 @@ impl Usage {
             self.save();
         }
         crossed
+    }
+}
+
+/// Écart de date de remise à zéro en deçà duquel deux valeurs décrivent la même
+/// fenêtre (l'API et la statusline peuvent arrondir différemment).
+const SAME_WINDOW: i64 = 60;
+
+/// Fusionne des limites reçues avec celles déjà connues, fenêtre par fenêtre :
+/// une remise à zéro plus tardive désigne une fenêtre plus récente ; dans une
+/// même fenêtre l'usage ne fait que monter, le plus haut est le plus récent.
+/// Une session inactive qui renvoie d'anciennes valeurs ne fait donc pas reculer
+/// l'affichage. Une fenêtre absente des nouvelles valeurs est conservée.
+fn merge(known: &RateLimits, received: RateLimits) -> RateLimits {
+    let newest = |known: Option<RateWindow>, received: Option<RateWindow>| match (known, received) {
+        (Some(k), Some(r)) => match (k.resets_at, r.resets_at) {
+            (Some(k_at), Some(r_at)) if k_at > r_at + SAME_WINDOW => Some(k),
+            (Some(k_at), Some(r_at)) if r_at <= k_at + SAME_WINDOW && k.used_percent > r.used_percent => Some(k),
+            _ => Some(r),
+        },
+        (known, None) => known,
+        (None, received) => received,
+    };
+    RateLimits {
+        five_hour: newest(known.five_hour, received.five_hour),
+        seven_day: newest(known.seven_day, received.seven_day),
+        seven_day_opus: newest(known.seven_day_opus, received.seven_day_opus),
+        seven_day_sonnet: newest(known.seven_day_sonnet, received.seven_day_sonnet),
     }
 }
 
@@ -387,7 +420,25 @@ mod tests {
         assert_eq!(usage.update(limits(100.0, 1)), Some(100.0));
         assert_eq!(usage.update(limits(100.0, 1)), None);
         // Nouvelle fenêtre : on peut réalerter.
-        assert_eq!(usage.update(limits(92.0, 2)), Some(90.0));
+        assert_eq!(usage.update(limits(92.0, 1 + FIVE_HOURS)), Some(90.0));
+    }
+
+    #[test]
+    fn stale_session_does_not_roll_usage_back() {
+        let mut usage = Usage::default();
+        usage.update(limits(30.0, 1000));
+        // Session inactive : mêmes fenêtre, ancienne valeur.
+        usage.update(limits(15.0, 1000));
+        assert_eq!(usage.limits.as_ref().unwrap().five_hour.unwrap().used_percent, 30.0);
+        // Même fenêtre, à quelques secondes près (arrondi de l'API).
+        usage.update(limits(32.0, 1010));
+        assert_eq!(usage.limits.as_ref().unwrap().five_hour.unwrap().used_percent, 32.0);
+        // Fenêtre précédente : ignorée.
+        usage.update(limits(80.0, 1000 - FIVE_HOURS));
+        assert_eq!(usage.limits.as_ref().unwrap().five_hour.unwrap().used_percent, 32.0);
+        // Nouvelle fenêtre : elle repart de bas.
+        usage.update(limits(2.0, 1000 + FIVE_HOURS));
+        assert_eq!(usage.limits.as_ref().unwrap().five_hour, Some(RateWindow { used_percent: 2.0, resets_at: Some(1000 + FIVE_HOURS) }));
     }
 
     #[test]

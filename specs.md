@@ -361,7 +361,7 @@ Correspondance événement → état :
 
 ### 8.5 Usage du compte (limites 5 h et hebdomadaire)
 
-Source : champ `rate_limits` de la statusline (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`, chacun avec `used_percentage` et `resets_at`). Ce sont des limites de **compte** : la dernière valeur reçue, toutes sessions confondues, fait foi. Absent en connexion par clé d'API : le widget est alors masqué.
+Source : champ `rate_limits` de la statusline (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`, chacun avec `used_percentage` et `resets_at`). Ce sont des limites de **compte**, communes à toutes les sessions. Une session inactive renvoie pourtant, à chaque rafraîchissement de sa statusline, les valeurs de sa dernière réponse : les valeurs reçues sont donc **fusionnées par fenêtre**. Une date de remise à zéro plus tardive désigne une fenêtre plus récente ; dans une même fenêtre (à 60 s près), l'usage ne fait que monter et le plus haut l'emporte. Absent en connexion par clé d'API : le widget est alors masqué.
 
 Claude Code ne transmet `rate_limits` qu'**après la première réponse** d'une session (vérifié en 2.1.306 : le JSON envoyé au démarrage ne contient pas la clé). Pour afficher la carte dès le lancement :
 
