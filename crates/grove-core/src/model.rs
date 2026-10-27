@@ -102,11 +102,20 @@ impl Workspace {
     }
 
     fn add_tab(&mut self, kind: TabKind) -> TabId {
-        let tab = Tab { id: TabId::new(), title: None, kind };
+        let tab = Tab { id: TabId::new(), title: None, kind, panes: Vec::new(), layout: None };
         let id = tab.id;
         self.tabs.push(tab);
         self.active_tab = Some(id);
         id
+    }
+
+    /// Onglet qui contient le volet `pane` (le principal ou un split).
+    pub fn pane_owner(&self, pane: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|t| t.has_pane(pane))
+    }
+
+    pub fn pane_owner_mut(&mut self, pane: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|t| t.has_pane(pane))
     }
 
     /// Ferme un onglet. Si c'était l'onglet actif, active son voisin.
@@ -162,7 +171,13 @@ pub struct Tab {
     pub id: TabId,
     /// Titre choisi par l'utilisateur ; sinon l'UI affiche celui du programme.
     pub title: Option<String>,
+    /// Type du volet principal, qui porte l'identifiant de l'onglet.
     pub kind: TabKind,
+    /// Autres volets (splits) et leur disposition ; vides : un seul volet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panes: Vec<crate::layout::Pane>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<crate::layout::Layout>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

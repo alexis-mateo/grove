@@ -47,7 +47,9 @@ garde l'ancien binaire jusqu'à sa fermeture.
 
 | Touche | Action |
 |---|---|
-| `Ctrl+Shift+T` / `Ctrl+Shift+W` | Nouvel onglet (profil par défaut) / fermer l'onglet |
+| `Ctrl+Shift+T` / `Ctrl+Shift+W` | Nouvel onglet (profil par défaut) / fermer le volet actif (l'onglet s'il n'est pas partagé) |
+| `Ctrl+Shift+D` / `Ctrl+Shift+S` | Partager le volet : nouveau terminal à droite / en dessous |
+| `Alt+←/→/↑/↓` | Passer au volet voisin (sans split, la touche va au programme) |
 | `Ctrl+Tab`, `Ctrl+PageDown` / `Ctrl+Shift+Tab`, `Ctrl+PageUp` | Onglet suivant / précédent |
 | `Ctrl+Shift+PageUp/PageDown` | Déplacer l'onglet (ou glisser-déposer) |
 | `Ctrl+Shift+R` | Renommer l'onglet (ou double-clic ; titre vide = titre du programme) |
@@ -69,6 +71,13 @@ La liste complète, avec recherche, est dans Paramètres › Raccourcis clavier
 enregistrés.
 
 Clic milieu sur un onglet : le fermer.
+
+Volets (splits) : un onglet peut être partagé en plusieurs terminaux, côte à
+côte ou empilés, à volonté. Le nouveau volet lance le même profil que celui
+qu'on partage (le profil par défaut à côté d'une session Claude). Le volet
+actif a un liseré ; un clic en change. Les séparateurs se déplacent à la
+souris (double-clic : moitié-moitié). Disposition et proportions sont
+restaurées au redémarrage ; un shell qui quitte ferme son volet.
 
 Sélection dans le terminal : glisser, double-clic (mot), triple-clic (ligne).
 Elle devient la sélection primaire, collée par un clic milieu. Quand le

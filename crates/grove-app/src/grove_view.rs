@@ -46,6 +46,12 @@ actions!(
         NewWorkspace,
         ToggleClaudeView,
         OpenSettings,
+        SplitRight,
+        SplitDown,
+        FocusPaneLeft,
+        FocusPaneRight,
+        FocusPaneUp,
+        FocusPaneDown,
     ]
 );
 
@@ -76,6 +82,14 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("shift-pagedown", crate::terminal_view::ScrollPageDown, Some("Terminal")),
         // Ctrl+, n'envoie rien d'utile aux programmes du terminal (specs §11.3).
         KeyBinding::new("ctrl-,", OpenSettings, None),
+        // D : à droite, S : en dessous.
+        KeyBinding::new("ctrl-shift-d", SplitRight, None),
+        KeyBinding::new("ctrl-shift-s", SplitDown, None),
+        // Sans split, la touche continue jusqu'au programme (voir `focus_neighbor`).
+        KeyBinding::new("alt-left", FocusPaneLeft, None),
+        KeyBinding::new("alt-right", FocusPaneRight, None),
+        KeyBinding::new("alt-up", FocusPaneUp, None),
+        KeyBinding::new("alt-down", FocusPaneDown, None),
     ]
 }
 
@@ -128,6 +142,10 @@ pub struct GroveView {
     /// Page Paramètres ouverte à la place des onglets.
     pub(crate) settings: Option<Settings>,
     pub(crate) config_watch: Option<ConfigWatch>,
+    /// Volet actif de chaque onglet partagé ; absent : le volet principal.
+    pub(crate) focused_pane: HashMap<TabId, TabId>,
+    /// Écriture différée de l'état pendant le déplacement d'un séparateur.
+    pub(crate) layout_save: Option<Task<()>>,
     pub(crate) worktree_dialog: Option<WorktreeDialog>,
     pub(crate) remove_dialog: Option<RemoveDialog>,
     pub(crate) notice: Option<Notice>,
@@ -197,6 +215,8 @@ impl GroveView {
             offline: HashMap::new(),
             settings: None,
             config_watch: None,
+            focused_pane: HashMap::new(),
+            layout_save: None,
             worktree_dialog: None,
             remove_dialog: None,
             notice: None,
@@ -344,10 +364,8 @@ impl GroveView {
         };
         for workspace in &project.workspaces {
             self.git.remove(&workspace.id);
-            for tab in &workspace.tabs {
-                self.terminals.remove(&tab.id);
-                self.natives.remove(&tab.id);
-                self.claude.sessions.remove(&tab.id);
+            for pane in workspace.tabs.iter().flat_map(|t| t.pane_ids()) {
+                self.drop_pane(pane);
             }
         }
         if let Some(key) = self.state.active_workspace {
@@ -404,11 +422,11 @@ impl GroveView {
         let Some(workspace) = self.state.workspace_mut(key) else {
             return;
         };
-        workspace.close_tab(tab);
-        self.terminals.remove(&tab);
-        self.offline.remove(&tab);
-        self.natives.remove(&tab);
-        self.claude.sessions.remove(&tab);
+        let panes = workspace.close_tab(tab).map(|t| t.pane_ids()).unwrap_or_else(|| vec![tab]);
+        for pane in panes {
+            self.drop_pane(pane);
+        }
+        self.focused_pane.remove(&tab);
         if self.rename.as_ref().is_some_and(|r| r.tab == tab) {
             self.rename = None;
         }
@@ -483,7 +501,7 @@ impl GroveView {
     /// Espace de travail qui contient l'onglet `tab`.
     pub(crate) fn locate_tab(&self, tab: TabId) -> Option<WorkspaceKey> {
         self.state.projects.iter().find_map(|p| {
-            p.workspaces.iter().find(|w| w.tabs.iter().any(|t| t.id == tab)).map(|w| (p.id, w.id))
+            p.workspaces.iter().find(|w| w.pane_owner(tab).is_some()).map(|w| (p.id, w.id))
         })
     }
 
@@ -520,7 +538,7 @@ impl GroveView {
         }
         let workspace = self.state.workspace(key)?;
         let cwd = workspace.path.clone();
-        let kind = workspace.tabs.iter().find(|t| t.id == tab)?.kind.clone();
+        let kind = workspace.pane_owner(tab)?.pane_kind(tab)?.clone();
         let options = match kind {
             TabKind::Terminal { .. } if self.offline.get(&tab) == Some(&Offline::NotConnected) => return None,
             TabKind::Terminal { profile } => {
@@ -552,12 +570,14 @@ impl GroveView {
         };
         // Le shell a quitté : on ferme son onglet. Une connexion SSH fermée reste
         // affichée, avec un bandeau pour se reconnecter.
-        cx.subscribe_in(&terminal, window, move |this, _, Exited(code): &Exited, window, cx| {
-            if this.is_ssh_tab(tab) {
-                this.offline.insert(tab, Offline::Closed(*code));
+        // Retrouvé par son entité : un volet promu change d'identifiant (`close_pane`).
+        cx.subscribe_in(&terminal, window, move |this, emitter, Exited(code): &Exited, window, cx| {
+            let Some(pane) = this.terminals.iter().find(|(_, t)| *t == emitter).map(|(id, _)| *id) else { return };
+            if this.is_ssh_tab(pane) {
+                this.offline.insert(pane, Offline::Closed(*code));
                 cx.notify();
             } else {
-                this.close_tab(key, tab, window, cx);
+                this.close_pane(pane, window, cx);
             }
         })
         .detach();
@@ -598,10 +618,15 @@ impl GroveView {
 
     /// Vue de l'onglet actif : terminal, ou vue native d'une session Claude.
     fn active_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyView> {
-        let (key, tab) = self.active_tab()?;
-        match self.native(key, tab, cx) {
+        let (key, _, pane) = self.active_pane()?;
+        self.pane_view(key, pane, window, cx)
+    }
+
+    /// Vue d'un volet : terminal, ou vue native d'une session Claude.
+    pub(crate) fn pane_view(&mut self, key: WorkspaceKey, pane: TabId, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyView> {
+        match self.native(key, pane, cx) {
             Some(native) => Some(native.into()),
-            None => self.terminal(key, tab, window, cx).map(Into::into),
+            None => self.terminal(key, pane, window, cx).map(Into::into),
         }
     }
 
@@ -611,7 +636,7 @@ impl GroveView {
             return window.focus(&settings.focus);
         }
         let focus = self.active_view(window, cx).and_then(|_| {
-            let tab = self.active_tab()?.1;
+            let tab = self.active_pane()?.2;
             match self.natives.get(&tab) {
                 Some(native) => Some(native.focus_handle(cx)),
                 None => Some(self.terminals.get(&tab)?.focus_handle(cx)),
@@ -645,8 +670,9 @@ impl GroveView {
     }
 
     fn close_active_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((key, tab)) = self.active_tab() {
-            self.close_tab(key, tab, window, cx);
+        // Onglet partagé : seulement le volet actif.
+        if let Some((_, _, pane)) = self.active_pane() {
+            self.close_pane(pane, window, cx);
         }
     }
 
@@ -753,9 +779,8 @@ impl Focusable for GroveView {
 impl Render for GroveView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_tab();
-        let terminal = self.active_view(window, cx);
+        let panes = active.and_then(|(key, tab)| self.render_panes(key, tab, window, cx));
         let native = active.is_some_and(|(_, tab)| self.natives.contains_key(&tab));
-        let not_connected = active.and_then(|(_, tab)| self.render_not_connected(tab, cx));
 
         let project_name = self
             .state
@@ -787,26 +812,16 @@ impl Render for GroveView {
                     .min_h_0()
                     .relative()
                     .flex()
-                    .child(match (self.render_history(cx), not_connected, terminal) {
-                        (Some(history), _, _) => div().size_full().child(history).into_any_element(),
-                        (None, Some(panel), _) => panel,
-                        (None, None, Some(terminal)) => div()
+                    .child(match (self.render_history(cx), panes) {
+                        (Some(history), _) => div().size_full().child(history).into_any_element(),
+                        (None, Some(panes)) => div()
                             .size_full()
                             .flex()
-                            .flex_col()
-                            .children(active.and_then(|(_, tab)| self.render_connection_closed(tab, cx)))
-                            .child(div().flex_1().min_h_0().flex().child(
-                                // Vue mise en cache : elle n'est redessinée que si le terminal
-                                // change, pas à chaque survol ou défilement ailleurs dans la fenêtre.
-                                div().flex_1().min_w_0().h_full().child(
-                                    terminal.cached(gpui::StyleRefinement::default().size_full()),
-                                ),
-                            )
+                            .child(div().flex_1().min_w_0().h_full().child(panes))
                             // En vue native, le pied de la saisie donne déjà modèle, coût et contexte.
                             .children(active.filter(|_| !native).and_then(|(_, tab)| self.render_session_panel(tab)))
-                            )
                             .into_any_element(),
-                        (None, None, None) => placeholder(self.state.projects.is_empty()).into_any_element(),
+                        (None, None) => placeholder(self.state.projects.is_empty()).into_any_element(),
                     })
                     .children(self.render_branch_picker(cx))
                     .children(self.render_profile_picker(cx))
@@ -822,10 +837,10 @@ impl Render for GroveView {
                 // Onglet SSH restauré sans connexion : Entrée le connecte.
                 if event.keystroke.key == "enter"
                     && this.focus_handle.is_focused(window)
-                    && let Some((_, tab)) = this.active_tab()
-                    && this.offline.get(&tab) == Some(&Offline::NotConnected)
+                    && let Some((_, _, pane)) = this.active_pane()
+                    && this.offline.get(&pane) == Some(&Offline::NotConnected)
                 {
-                    this.connect_tab(tab, window, cx);
+                    this.connect_tab(pane, window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -852,6 +867,28 @@ impl Render for GroveView {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleClaudeView, window, cx| this.toggle_claude_view(window, cx)))
+            .on_action(cx.listener(|this, _: &SplitRight, window, cx| this.split_active(grove_core::Axis::Row, window, cx)))
+            .on_action(cx.listener(|this, _: &SplitDown, window, cx| this.split_active(grove_core::Axis::Column, window, cx)))
+            .on_action(cx.listener(|this, _: &FocusPaneLeft, window, cx| {
+                if !this.focus_neighbor(grove_core::Direction::Left, window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneRight, window, cx| {
+                if !this.focus_neighbor(grove_core::Direction::Right, window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneUp, window, cx| {
+                if !this.focus_neighbor(grove_core::Direction::Up, window, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &FocusPaneDown, window, cx| {
+                if !this.focus_neighbor(grove_core::Direction::Down, window, cx) {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 if this.settings.is_some() {
                     this.close_settings(window, cx);

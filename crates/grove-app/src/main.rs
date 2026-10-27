@@ -10,6 +10,7 @@ mod markdown;
 mod marquee;
 mod mouse;
 mod native_view;
+mod panes;
 mod profiles;
 mod settings;
 mod shortcuts;

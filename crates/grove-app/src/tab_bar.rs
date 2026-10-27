@@ -208,7 +208,8 @@ impl GroveView {
                 .into_any_element(),
         };
 
-        let progress = self.terminals.get(&id).and_then(|terminal| terminal.read(cx).progress());
+        // Celle du premier volet qui en affiche une.
+        let progress = tab.pane_ids().iter().find_map(|pane| self.terminals.get(pane)?.read(cx).progress());
 
         let close_group = SharedString::from(format!("close-{id}"));
         let close = div()

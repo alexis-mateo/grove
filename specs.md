@@ -674,7 +674,7 @@ setup = ["docker compose up -d", "npm run dev"]
 - ~~**Persistance**~~ : JSON retenu pour la v1 (cf. §4).
 - **Distribution Linux** : AppImage, `.deb`, AUR ? Flatpak compliqué (sandbox incompatible avec PTY, git et `claude` du système).
 - **Restauration du contenu des terminaux** au redémarrage (sérialisation du scrollback) : v2 ?
-- **Splits** (plusieurs terminaux côte à côte dans un onglet) : v1 ou plus tard ?
+- ~~**Splits**~~ : faits. Arbre de volets par onglet (`Tab.layout`, persisté), le volet principal garde l'id de l'onglet ; `Ctrl+Shift+D` / `Ctrl+Shift+S` partagent, `Alt+flèches` naviguent, `Ctrl+Shift+W` ferme le volet actif.
 
 ---
 

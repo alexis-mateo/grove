@@ -124,7 +124,7 @@ impl GroveView {
     /// Profil lancé par l'onglet `tab`, s'il en a un et qu'il existe encore.
     pub(crate) fn tab_profile(&self, tab: TabId) -> Option<ResolvedProfile> {
         let key = self.locate_tab(tab)?;
-        let TabKind::Terminal { profile: Some(name) } = &self.state.workspace(key)?.tabs.iter().find(|t| t.id == tab)?.kind else {
+        let TabKind::Terminal { profile: Some(name) } = self.state.workspace(key)?.pane_owner(tab)?.pane_kind(tab)? else {
             return None;
         };
         self.find_profile(key.0, name)
@@ -151,7 +151,7 @@ impl GroveView {
             .projects
             .iter()
             .flat_map(|p| p.workspaces.iter().flat_map(|w| &w.tabs))
-            .map(|t| t.id)
+            .flat_map(|t| t.pane_ids())
             .collect();
         for tab in tabs {
             if self.tab_profile(tab).is_some_and(|p| p.profile.kind() == ProfileKind::Ssh && p.profile.reconnect == Reconnect::Manual) {
@@ -392,7 +392,6 @@ impl GroveView {
             None => "Connexion fermée".into(),
         };
         let color = if code.is_some_and(|c| c != 0) { theme::danger() } else { theme::text_muted() };
-        let key = self.locate_tab(tab)?;
         Some(
             div()
                 .flex()
@@ -414,7 +413,7 @@ impl GroveView {
                 )
                 .child(
                     icon_button("ssh-close-tab", Icon::X)
-                        .on_click(cx.listener(move |this, _, window, cx| this.close_tab(key, tab, window, cx))),
+                        .on_click(cx.listener(move |this, _, window, cx| this.close_pane(tab, window, cx))),
                 )
                 .into_any_element(),
         )

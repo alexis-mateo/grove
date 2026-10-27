@@ -6,6 +6,7 @@ use gpui::KeyBinding;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Group {
     Tabs,
+    Panes,
     Workspaces,
     Branches,
     Claude,
@@ -18,6 +19,7 @@ impl Group {
     pub fn label(self) -> &'static str {
         match self {
             Group::Tabs => "Onglets",
+            Group::Panes => "Volets (splits)",
             Group::Workspaces => "Projets et espaces de travail",
             Group::Branches => "Branches",
             Group::Claude => "Claude",
@@ -40,12 +42,18 @@ pub(crate) struct Shortcut {
 fn describe(action: &str) -> Option<(Group, &'static str)> {
     Some(match action {
         "grove::NewTab" => (Group::Tabs, "Nouveau terminal (profil par défaut)"),
-        "grove::CloseTab" => (Group::Tabs, "Fermer l'onglet"),
+        "grove::CloseTab" => (Group::Tabs, "Fermer le volet actif, ou l'onglet s'il n'est pas partagé"),
         "grove::NextTab" => (Group::Tabs, "Onglet suivant"),
         "grove::PreviousTab" => (Group::Tabs, "Onglet précédent"),
         "grove::MoveTabLeft" => (Group::Tabs, "Déplacer l'onglet à gauche"),
         "grove::MoveTabRight" => (Group::Tabs, "Déplacer l'onglet à droite"),
         "grove::RenameTab" => (Group::Tabs, "Renommer l'onglet"),
+        "grove::SplitRight" => (Group::Panes, "Partager : nouveau terminal à droite"),
+        "grove::SplitDown" => (Group::Panes, "Partager : nouveau terminal en dessous"),
+        "grove::FocusPaneLeft" => (Group::Panes, "Volet de gauche"),
+        "grove::FocusPaneRight" => (Group::Panes, "Volet de droite"),
+        "grove::FocusPaneUp" => (Group::Panes, "Volet du dessus"),
+        "grove::FocusPaneDown" => (Group::Panes, "Volet du dessous"),
         "grove::AddProject" => (Group::Workspaces, "Ajouter un projet"),
         "grove::NewWorkspace" => (Group::Workspaces, "Nouvel espace de travail (worktree)"),
         "grove::OpenBranches" => (Group::Branches, "Sélecteur de branches"),
