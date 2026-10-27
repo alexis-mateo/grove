@@ -490,10 +490,14 @@ impl GroveView {
             Some(TabKind::Terminal { profile: Some(name) }) => Some(name.clone()),
             _ => None,
         };
+        let claude = matches!(tab_ref.map(|t| &t.kind), Some(TabKind::Claude { .. }));
         tab_ref
             .and_then(|t| t.title.clone())
             .or(profile)
-            .or_else(|| self.terminals.get(&tab)?.read(cx).title().map(str::to_owned))
+            .or_else(|| {
+                let title = self.terminals.get(&tab)?.read(cx).title()?;
+                Some(if claude { strip_status_glyph(title) } else { title }.to_owned())
+            })
             .unwrap_or_else(|| fallback.to_owned())
             .into()
     }
@@ -954,4 +958,28 @@ fn placeholder(no_project: bool) -> impl IntoElement {
                 .child(div().text_sm().text_color(theme::text_muted()).child(hint)),
         )
         .child(kbd(shortcut))
+}
+
+/// Titre de Claude Code sans son préfixe d'état (`✳ `, spinner `◐ `…) : l'icône de l'onglet
+/// le montre déjà, et ce glyphe, pris dans une police de repli, n'est pas aligné sur le texte.
+fn strip_status_glyph(title: &str) -> &str {
+    let mut chars = title.chars();
+    match (chars.next(), chars.next()) {
+        (Some(glyph), Some(' ')) if !glyph.is_alphanumeric() && !glyph.is_ascii() => chars.as_str().trim_start(),
+        _ => title,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_status_glyph;
+
+    #[test]
+    fn strips_claude_status_glyph() {
+        assert_eq!(strip_status_glyph("◑ Story kb#12995"), "Story kb#12995");
+        assert_eq!(strip_status_glyph("✳ Claude Code"), "Claude Code");
+        assert_eq!(strip_status_glyph("Story kb#12995"), "Story kb#12995");
+        assert_eq!(strip_status_glyph("é dans le titre"), "é dans le titre");
+        assert_eq!(strip_status_glyph("- liste"), "- liste");
+    }
 }

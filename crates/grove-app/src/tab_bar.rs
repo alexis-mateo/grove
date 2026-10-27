@@ -5,9 +5,10 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt, Context, KeyDownEvent, MouseButton, Render, SharedString, Window, div, ease_in_out,
-    prelude::*, px, relative,
+    Animation, AnimationExt, Context, KeyDownEvent, MouseButton, Render, SharedString, Transformation, Window, div,
+    ease_in_out, percentage, prelude::*, px, relative,
 };
+use grove_claude::ClaudeStatus;
 use grove_core::{ClaudeView, TabId, TabKind};
 use grove_term::Progress;
 
@@ -178,11 +179,23 @@ impl GroveView {
         let group: SharedString = format!("tab-{id}").into();
 
         let leading = match (&tab.kind, self.claude.sessions.get(&id)) {
-            (TabKind::Claude { .. }, Some(session)) => icon(Icon::Claude, status_badge(&session.status).1),
-            (TabKind::Claude { .. }, None) => icon(Icon::Claude, theme::text_faint()),
+            // Tourne lentement tant que Claude travaille.
+            (TabKind::Claude { .. }, Some(session)) if matches!(session.status, ClaudeStatus::Working { .. }) => {
+                icon(Icon::Claude, status_badge(&session.status).1)
+                    .with_animation(
+                        SharedString::from(format!("tab-working-{id}")),
+                        Animation::new(Duration::from_millis(2400)).repeat(),
+                        |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                    )
+                    .into_any_element()
+            }
+            (TabKind::Claude { .. }, Some(session)) => {
+                icon(Icon::Claude, status_badge(&session.status).1).into_any_element()
+            }
+            (TabKind::Claude { .. }, None) => icon(Icon::Claude, theme::text_faint()).into_any_element(),
             (TabKind::Terminal { .. }, _) => {
                 let glyph = self.tab_profile(id).map_or(Icon::Terminal, |p| crate::profiles::profile_icon(&p.profile));
-                icon(glyph, if is_active { theme::text_muted() } else { theme::text_faint() })
+                icon(glyph, if is_active { theme::text_muted() } else { theme::text_faint() }).into_any_element()
             }
         };
 
