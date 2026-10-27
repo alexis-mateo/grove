@@ -18,6 +18,7 @@ use crate::branches::BranchPicker;
 use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
 use crate::native_view::{NativeView, NativeViewEvent};
+use crate::profiles::{Offline, ProfileCatalog, ProfilePicker};
 use crate::sidebar::{DEFAULT_SIDEBAR_WIDTH, DraggedSidebar};
 use crate::terminal_view::{Exited, TerminalView};
 use crate::text_field::TextField;
@@ -113,6 +114,11 @@ pub struct GroveView {
     pub(crate) rename: Option<Rename>,
     pub(crate) claude: ClaudeRuntime,
     pub(crate) branch_picker: Option<BranchPicker>,
+    pub(crate) profile_picker: Option<ProfilePicker>,
+    /// Profils des projets et hôtes de `~/.ssh/config`.
+    pub(crate) profiles: ProfileCatalog,
+    /// Onglets SSH sans processus : pas encore connectés, ou connexion fermée.
+    pub(crate) offline: HashMap<TabId, Offline>,
     pub(crate) worktree_dialog: Option<WorktreeDialog>,
     pub(crate) remove_dialog: Option<RemoveDialog>,
     pub(crate) notice: Option<Notice>,
@@ -177,6 +183,9 @@ impl GroveView {
         let mut this = Self {
             claude,
             branch_picker: None,
+            profile_picker: None,
+            profiles: ProfileCatalog::default(),
+            offline: HashMap::new(),
             worktree_dialog: None,
             remove_dialog: None,
             notice: None,
@@ -207,10 +216,13 @@ impl GroveView {
         for (id, path) in workspaces {
             this.watch_git(id, &path, cx);
         }
-        let projects: Vec<_> = this.state.projects.iter().map(|p| p.id).collect();
-        for project in projects {
+        let projects: Vec<_> = this.state.projects.iter().map(|p| (p.id, p.root.clone())).collect();
+        for (project, root) in projects {
+            this.profiles.reload_project(project, &root);
             this.import_worktrees(project, cx);
         }
+        this.profiles.reload_ssh();
+        this.mark_restored_ssh_tabs();
 
         match open {
             Some(path) => this.open_project(&path, window, cx),
@@ -307,6 +319,7 @@ impl GroveView {
         let project = self.state.project(id).expect("projet ajouté");
         let workspace = (id, project.workspaces[0].id);
         if !existed {
+            self.profiles.reload_project(id, &path);
             self.watch_git(workspace.1, &path, cx);
             self.import_worktrees(id, cx);
         }
@@ -354,6 +367,7 @@ impl GroveView {
         self.rename = None;
         self.claude.history = None;
         self.branch_picker = None;
+        self.profile_picker = None;
         self.worktree_dialog = None;
         self.remove_dialog = None;
         self.save();
@@ -378,6 +392,7 @@ impl GroveView {
         };
         workspace.close_tab(tab);
         self.terminals.remove(&tab);
+        self.offline.remove(&tab);
         self.natives.remove(&tab);
         self.claude.sessions.remove(&tab);
         if self.rename.as_ref().is_some_and(|r| r.tab == tab) {
@@ -438,8 +453,14 @@ impl GroveView {
             Some(TabKind::Claude { .. }) => "Claude",
             _ => "Terminal",
         };
+        // Onglet d'un profil : son nom, pas le titre du programme (`user@hôte: ~`).
+        let profile = match tab_ref.map(|t| &t.kind) {
+            Some(TabKind::Terminal { profile: Some(name) }) => Some(name.clone()),
+            _ => None,
+        };
         tab_ref
             .and_then(|t| t.title.clone())
+            .or(profile)
             .or_else(|| self.terminals.get(&tab)?.read(cx).title().map(str::to_owned))
             .unwrap_or_else(|| fallback.to_owned())
             .into()
@@ -487,8 +508,19 @@ impl GroveView {
         let cwd = workspace.path.clone();
         let kind = workspace.tabs.iter().find(|t| t.id == tab)?.kind.clone();
         let options = match kind {
-            TabKind::Terminal => {
-                let mut options = self.terminal_options(cwd);
+            TabKind::Terminal { .. } if self.offline.get(&tab) == Some(&Offline::NotConnected) => return None,
+            TabKind::Terminal { profile } => {
+                let profile = profile.and_then(|name| {
+                    let found = self.find_profile(key.0, &name);
+                    if found.is_none() {
+                        log::warn!("profil « {name} » introuvable : onglet ouvert avec le shell");
+                    }
+                    found
+                });
+                let mut options = match profile {
+                    Some(resolved) => self.profile_options(&resolved.profile, &cwd),
+                    None => self.terminal_options(cwd),
+                };
                 if let Some(script) = self.pending_commands.remove(&tab) {
                     options.args = vec!["-c".into(), script];
                 }
@@ -504,9 +536,15 @@ impl GroveView {
                 return None;
             }
         };
-        // Le shell a quitté : on ferme son onglet.
-        cx.subscribe_in(&terminal, window, move |this, _, _: &Exited, window, cx| {
-            this.close_tab(key, tab, window, cx);
+        // Le shell a quitté : on ferme son onglet. Une connexion SSH fermée reste
+        // affichée, avec un bandeau pour se reconnecter.
+        cx.subscribe_in(&terminal, window, move |this, _, Exited(code): &Exited, window, cx| {
+            if this.is_ssh_tab(tab) {
+                this.offline.insert(tab, Offline::Closed(*code));
+                cx.notify();
+            } else {
+                this.close_tab(key, tab, window, cx);
+            }
         })
         .detach();
         cx.observe(&terminal, |_, _, cx| cx.notify()).detach();
@@ -581,14 +619,11 @@ impl GroveView {
 
     // Actions clavier.
 
+    /// Nouvel onglet du profil par défaut (`[terminal] default_profile`), sinon le shell.
     pub(crate) fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(key) = self.state.active_workspace else { return };
-        if let Some(workspace) = self.state.workspace_mut(key) {
-            workspace.add_terminal_tab();
-            self.save();
-            self.focus_active(window, cx);
-            cx.notify();
-        }
+        let Some((project, _)) = self.state.active_workspace else { return };
+        let profile = self.config.terminal.default_profile.clone().filter(|name| self.find_profile(project, name).is_some());
+        self.open_profile_tab(profile, window, cx);
     }
 
     fn close_active_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -663,6 +698,8 @@ impl EntityInputHandler for GroveView {
             self.rename_key_down(&event, window, cx);
         } else if self.branch_picker.as_ref().is_some_and(|p| focused(&p.focus)) {
             self.branch_picker_key_down(&event, window, cx);
+        } else if self.profile_picker.as_ref().is_some_and(|p| focused(&p.focus)) {
+            self.profile_picker_key_down(&event, window, cx);
         } else if self.worktree_dialog.as_ref().is_some_and(|d| focused(&d.focus)) {
             self.worktree_dialog_key_down(&event, window, cx);
         }
@@ -698,6 +735,7 @@ impl Render for GroveView {
         let active = self.active_tab();
         let terminal = self.active_view(window, cx);
         let native = active.is_some_and(|(_, tab)| self.natives.contains_key(&tab));
+        let not_connected = active.and_then(|(_, tab)| self.render_not_connected(tab, cx));
 
         let project_name = self
             .state
@@ -728,12 +766,15 @@ impl Render for GroveView {
                     .min_h_0()
                     .relative()
                     .flex()
-                    .child(match (self.render_history(cx), terminal) {
-                        (Some(history), _) => div().size_full().child(history).into_any_element(),
-                        (None, Some(terminal)) => div()
+                    .child(match (self.render_history(cx), not_connected, terminal) {
+                        (Some(history), _, _) => div().size_full().child(history).into_any_element(),
+                        (None, Some(panel), _) => panel,
+                        (None, None, Some(terminal)) => div()
                             .size_full()
                             .flex()
-                            .child(
+                            .flex_col()
+                            .children(active.and_then(|(_, tab)| self.render_connection_closed(tab, cx)))
+                            .child(div().flex_1().min_h_0().flex().child(
                                 // Vue mise en cache : elle n'est redessinée que si le terminal
                                 // change, pas à chaque survol ou défilement ailleurs dans la fenêtre.
                                 div().flex_1().min_w_0().h_full().child(
@@ -742,10 +783,12 @@ impl Render for GroveView {
                             )
                             // En vue native, le pied de la saisie donne déjà modèle, coût et contexte.
                             .children(active.filter(|_| !native).and_then(|(_, tab)| self.render_session_panel(tab)))
+                            )
                             .into_any_element(),
-                        (None, None) => placeholder(self.state.projects.is_empty()).into_any_element(),
+                        (None, None, None) => placeholder(self.state.projects.is_empty()).into_any_element(),
                     })
                     .children(self.render_branch_picker(cx))
+                    .children(self.render_profile_picker(cx))
                     .children(self.render_worktree_dialog(cx))
                     .children(self.render_remove_dialog(cx)),
             );
@@ -754,6 +797,17 @@ impl Render for GroveView {
             .id("grove")
             .key_context("Grove")
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                // Onglet SSH restauré sans connexion : Entrée le connecte.
+                if event.keystroke.key == "enter"
+                    && this.focus_handle.is_focused(window)
+                    && let Some((_, tab)) = this.active_tab()
+                    && this.offline.get(&tab) == Some(&Offline::NotConnected)
+                {
+                    this.connect_tab(tab, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::close_active_tab))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))

@@ -10,6 +10,8 @@ mod markdown;
 mod marquee;
 mod mouse;
 mod native_view;
+mod profiles;
+mod settings;
 mod sidebar;
 mod tab_bar;
 mod terminal_view;

@@ -68,8 +68,8 @@ struct GridLayout {
     cursor: Option<(usize, usize)>,
 }
 
-/// Émis quand le processus du terminal s'est terminé.
-pub struct Exited;
+/// Émis quand le processus du terminal s'est terminé, avec son code de sortie.
+pub struct Exited(pub Option<i32>);
 
 impl gpui::EventEmitter<Exited> for TerminalView {}
 
@@ -148,7 +148,7 @@ impl TerminalView {
             TerminalEvent::Exited(code) => {
                 self.progress = None;
                 self.exited = Some(code);
-                cx.emit(Exited);
+                cx.emit(Exited(code));
             }
         }
     }

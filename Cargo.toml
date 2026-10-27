@@ -19,6 +19,8 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+# Écriture de config.toml qui garde commentaires et mise en forme.
+toml_edit = "0.25"
 uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"
 log = "0.4"

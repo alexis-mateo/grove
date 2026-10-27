@@ -88,7 +88,12 @@ impl Workspace {
 
     /// Ajoute un onglet terminal, le rend actif et renvoie son id.
     pub fn add_terminal_tab(&mut self) -> TabId {
-        self.add_tab(TabKind::Terminal)
+        self.add_tab(TabKind::Terminal { profile: None })
+    }
+
+    /// Ajoute un onglet qui lance le profil `profile` (`None` : le shell).
+    pub fn add_profile_tab(&mut self, profile: Option<String>) -> TabId {
+        self.add_tab(TabKind::Terminal { profile })
     }
 
     /// Ajoute un onglet Claude ; `session_id` pour reprendre une session existante.
@@ -163,7 +168,11 @@ pub struct Tab {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TabKind {
-    Terminal,
+    /// `profile` : nom du profil lancé (specs §11.1) ; `None` : le shell.
+    Terminal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+    },
     /// Session Claude Code. `session_id` est connu après `SessionStart`
     /// et sert à reprendre la session au redémarrage (`--resume`).
     Claude {
@@ -246,6 +255,16 @@ mod tests {
     fn claude_tabs_saved_before_the_native_view_open_in_the_terminal() {
         let kind: TabKind = serde_json::from_str(r#"{"type": "claude", "session_id": "abc"}"#).unwrap();
         assert_eq!(kind, TabKind::Claude { session_id: Some("abc".into()), view: ClaudeView::Terminal });
+    }
+
+    #[test]
+    fn terminal_tabs_saved_before_profiles_run_the_shell() {
+        let kind: TabKind = serde_json::from_str(r#"{"type": "terminal"}"#).unwrap();
+        assert_eq!(kind, TabKind::Terminal { profile: None });
+        let kind = TabKind::Terminal { profile: Some("staging".into()) };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, r#"{"type":"terminal","profile":"staging"}"#);
+        assert_eq!(serde_json::from_str::<TabKind>(&json).unwrap(), kind);
     }
 
     #[test]

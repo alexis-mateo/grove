@@ -88,8 +88,24 @@ impl GroveView {
                 .child(div().flex().items_center().gap_1().min_w_0().flex_shrink().children(tabs))
                 .child(
                     icon_button("new-tab", Icon::Plus)
-                        .tooltip(tooltip("Nouveau terminal · Ctrl+Shift+T"))
-                        .on_click(cx.listener(|this, _, window, cx| this.new_tab(&NewTab, window, cx))),
+                        .tooltip(tooltip("Nouveau terminal · Ctrl+Shift+T · clic droit : profils"))
+                        .on_click(cx.listener(|this, _, window, cx| this.new_tab(&NewTab, window, cx)))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, _, window, cx| this.open_profile_picker(window, cx)),
+                        ),
+                )
+                .child(
+                    icon_button("new-tab-profile", Icon::ChevronDown)
+                        .w(px(16.0))
+                        .when(self.profile_picker.is_some(), |b| b.bg(theme::selected()))
+                        .tooltip(tooltip("Ouvrir un terminal avec un profil (SSH…)"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            // Le clic qui vient de fermer le sélecteur (clic extérieur) ne le rouvre pas.
+                            if !std::mem::take(&mut this.popover_dismissed) {
+                                this.open_profile_picker(window, cx);
+                            }
+                        })),
                 )
                 .child(
                     div()
@@ -164,7 +180,10 @@ impl GroveView {
         let leading = match (&tab.kind, self.claude.sessions.get(&id)) {
             (TabKind::Claude { .. }, Some(session)) => icon(Icon::Claude, status_badge(&session.status).1),
             (TabKind::Claude { .. }, None) => icon(Icon::Claude, theme::text_faint()),
-            (TabKind::Terminal, _) => icon(Icon::Terminal, if is_active { theme::text_muted() } else { theme::text_faint() }),
+            (TabKind::Terminal { .. }, _) => {
+                let glyph = self.tab_profile(id).map_or(Icon::Terminal, |p| crate::profiles::profile_icon(&p.profile));
+                icon(glyph, if is_active { theme::text_muted() } else { theme::text_faint() })
+            }
         };
 
         let title = match renaming {
@@ -263,7 +282,7 @@ impl GroveView {
         let key = self.locate_tab(tab)?;
         match self.state.workspace(key)?.tabs.iter().find(|t| t.id == tab)?.kind {
             TabKind::Claude { view, .. } => Some(view),
-            TabKind::Terminal => None,
+            TabKind::Terminal { .. } => None,
         }
     }
 

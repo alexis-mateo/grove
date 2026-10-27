@@ -11,6 +11,14 @@ pub const FILE_NAME: &str = ".grove.toml";
 #[serde(default)]
 pub struct ProjectConfig {
     pub worktree: WorktreeConfig,
+    pub terminal: ProjectTerminalConfig,
+}
+
+/// Profils de terminal propres au projet, partagés avec l'équipe (specs §11.1).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectTerminalConfig {
+    pub profiles: Vec<crate::Profile>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

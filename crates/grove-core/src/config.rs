@@ -57,6 +57,9 @@ pub struct TerminalConfig {
     /// Shell lancé dans les onglets. Par défaut : `$SHELL`, sinon `/bin/sh`.
     pub shell: Option<String>,
     pub scrollback: usize,
+    /// Profil des nouveaux onglets (`Ctrl+Shift+T`, `+`). Par défaut : le shell.
+    pub default_profile: Option<String>,
+    pub profiles: Vec<crate::Profile>,
 }
 
 impl Default for TerminalConfig {
@@ -64,6 +67,8 @@ impl Default for TerminalConfig {
         Self {
             shell: None,
             scrollback: 10_000,
+            default_profile: None,
+            profiles: Vec::new(),
         }
     }
 }
