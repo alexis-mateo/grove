@@ -91,9 +91,10 @@ affichés. Claude Code n'active les images que pour kitty et Ghostty : Grove
 lance ses PTY avec `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`, ce qui affiche par
 exemple les vignettes du plugin `claude-image-view`.
 
-Champs de saisie (recherche de branche, nouvel espace, renommage) : `Ctrl+A`
+Champs de saisie (recherche, nouvel espace, renommage, Paramètres) : flèches,
+`Début` / `Fin`, `Ctrl+←/→` de mot en mot, `Shift` pour sélectionner ; `Ctrl+A`
 sélectionne tout, `Ctrl+C` / `Ctrl+X` copient / coupent (tout le texte sans
-sélection), `Ctrl+V` colle, `Ctrl+Retour arrière` efface le dernier segment.
+sélection), `Ctrl+V` colle, `Ctrl+Retour arrière` / `Ctrl+Suppr` effacent un mot.
 Un clic en dehors d'un panneau flottant le ferme.
 
 Bouton de synchronisation (à droite de la branche, si le dépôt a un remote) :

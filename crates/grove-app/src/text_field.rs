@@ -1,13 +1,15 @@
 //! Champ de texte d'une ligne piloté au clavier (recherche de branche, nom
-//! d'onglet) : saisie, effacement, Ctrl+A, copier / couper / coller.
+//! d'onglet, Paramètres) : curseur déplaçable, sélection, copier / couper / coller.
 //!
-//! Pas de curseur déplaçable : on écrit en fin de texte. La seule sélection
-//! possible est « tout » (Ctrl+A) ; sans sélection, copier et couper portent
-//! sur tout le texte, comme VS Code le fait pour la ligne courante.
+//! Flèches, `Début`, `Fin` ; avec `Ctrl`, de mot en mot ; avec `Shift`, la
+//! sélection s'étend. Sans sélection, copier et couper portent sur tout le
+//! texte, comme VS Code le fait pour la ligne courante.
+
+use std::ops::Range;
 
 use gpui::{
     App, ClipboardItem, Div, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Keystroke, canvas, div,
-    prelude::*,
+    prelude::*, px,
 };
 
 use crate::theme;
@@ -15,8 +17,10 @@ use crate::theme;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextField {
     text: String,
-    /// Tout le texte est sélectionné : la prochaine saisie le remplace.
-    all_selected: bool,
+    /// Position du curseur, en octets (toujours sur une frontière de caractère).
+    cursor: usize,
+    /// Autre bout de la sélection ; égal au curseur ou `None` : pas de sélection.
+    anchor: Option<usize>,
 }
 
 /// Effet d'une touche sur le champ.
@@ -26,17 +30,22 @@ pub enum Edit {
     Ignored,
     /// Le texte a changé.
     Changed,
-    /// Seule la sélection a changé.
+    /// Seuls le curseur ou la sélection ont changé.
     Selection,
     /// Texte à placer dans le presse-papiers ; `Changed` en plus s'il a été coupé.
     Copy { text: String, cut: bool },
 }
 
+/// Caractère d'un mot, pour Ctrl+flèches et Ctrl+Retour arrière.
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric()
+}
+
 impl TextField {
-    /// Champ prérempli, entièrement sélectionné (renommage).
+    /// Champ prérempli, entièrement sélectionné (renommage) : la saisie le remplace.
     pub fn selected(text: impl Into<String>) -> Self {
         let text = text.into();
-        Self { all_selected: !text.is_empty(), text }
+        Self { cursor: text.len(), anchor: Some(0).filter(|_| !text.is_empty()), text }
     }
 
     pub fn as_str(&self) -> &str {
@@ -47,19 +56,79 @@ impl TextField {
         self.text.is_empty()
     }
 
+    /// Partie sélectionnée, si elle n'est pas vide.
+    fn selection(&self) -> Option<Range<usize>> {
+        let anchor = self.anchor.filter(|a| *a != self.cursor)?;
+        Some(anchor.min(self.cursor)..anchor.max(self.cursor))
+    }
+
+    fn previous(&self, from: usize) -> usize {
+        self.text[..from].char_indices().next_back().map_or(0, |(i, _)| i)
+    }
+
+    fn next(&self, from: usize) -> usize {
+        self.text[from..].chars().next().map_or(from, |c| from + c.len_utf8())
+    }
+
+    /// Début du mot avant `from` : on saute les séparateurs, puis le mot.
+    fn word_start(&self, from: usize) -> usize {
+        let before = &self.text[..from];
+        let trimmed = before.trim_end_matches(|c| !is_word(c));
+        trimmed.trim_end_matches(is_word).len()
+    }
+
+    /// Fin du mot après `from`.
+    fn word_end(&self, from: usize) -> usize {
+        let after = &self.text[from..];
+        let trimmed = after.trim_start_matches(|c| !is_word(c));
+        let word = trimmed.len() - trimmed.trim_start_matches(is_word).len();
+        from + (after.len() - trimmed.len()) + word
+    }
+
+    /// Place le curseur en `to` ; avec `extend`, la sélection part de l'ancienne position.
+    fn move_to(&mut self, to: usize, extend: bool) {
+        if extend {
+            self.anchor.get_or_insert(self.cursor);
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = to;
+    }
+
+    fn delete(&mut self, range: Range<usize>) {
+        self.text.replace_range(range.clone(), "");
+        self.cursor = range.start;
+        self.anchor = None;
+    }
+
+    /// Remplace la sélection (ou insère au curseur).
+    fn insert(&mut self, text: &str) {
+        let range = self.selection().unwrap_or(self.cursor..self.cursor);
+        self.text.replace_range(range.clone(), text);
+        self.cursor = range.start + text.len();
+        self.anchor = None;
+    }
+
     /// Applique `keystroke`. `paste` lit le presse-papiers, seulement si besoin.
     pub fn apply(&mut self, keystroke: &Keystroke, paste: impl FnOnce() -> Option<String>) -> Edit {
         let modifiers = &keystroke.modifiers;
         let secondary = modifiers.control || modifiers.platform;
+        let shift = modifiers.shift;
+        let selection = self.selection();
         match keystroke.key.as_str() {
             "a" if secondary => {
-                self.all_selected = !self.text.is_empty();
+                self.anchor = Some(0);
+                self.cursor = self.text.len();
                 Edit::Selection
             }
-            "c" if secondary => Edit::Copy { text: self.text.clone(), cut: false },
+            "c" if secondary => match selection {
+                Some(range) => Edit::Copy { text: self.text[range].to_owned(), cut: false },
+                None => Edit::Copy { text: self.text.clone(), cut: false },
+            },
             "x" if secondary => {
-                let text = std::mem::take(&mut self.text);
-                self.all_selected = false;
+                let range = selection.unwrap_or(0..self.text.len());
+                let text = self.text[range.clone()].to_owned();
+                self.delete(range);
                 Edit::Copy { text, cut: true }
             }
             "v" if secondary => match paste() {
@@ -71,21 +140,45 @@ impl TextField {
                 }
                 None => Edit::Selection,
             },
-            "backspace" if self.all_selected => {
-                self.text.clear();
-                self.all_selected = false;
-                Edit::Changed
-            }
-            "backspace" if secondary => {
-                self.delete_word();
+            "backspace" | "delete" if selection.is_some() => {
+                self.delete(selection.unwrap_or_default());
                 Edit::Changed
             }
             "backspace" => {
-                self.text.pop();
+                let start = if secondary { self.word_start(self.cursor) } else { self.previous(self.cursor) };
+                self.delete(start..self.cursor);
                 Edit::Changed
             }
-            "left" | "right" | "home" | "end" if self.all_selected => {
-                self.all_selected = false;
+            "delete" => {
+                let end = if secondary { self.word_end(self.cursor) } else { self.next(self.cursor) };
+                self.delete(self.cursor..end);
+                Edit::Changed
+            }
+            // Sans Shift, une flèche réduit d'abord la sélection à son bord.
+            "left" if !shift && selection.is_some() => {
+                self.move_to(selection.unwrap_or_default().start, false);
+                Edit::Selection
+            }
+            "right" if !shift && selection.is_some() => {
+                self.move_to(selection.unwrap_or_default().end, false);
+                Edit::Selection
+            }
+            "left" => {
+                let to = if secondary { self.word_start(self.cursor) } else { self.previous(self.cursor) };
+                self.move_to(to, shift);
+                Edit::Selection
+            }
+            "right" => {
+                let to = if secondary { self.word_end(self.cursor) } else { self.next(self.cursor) };
+                self.move_to(to, shift);
+                Edit::Selection
+            }
+            "home" => {
+                self.move_to(0, shift);
+                Edit::Selection
+            }
+            "end" => {
+                self.move_to(self.text.len(), shift);
                 Edit::Selection
             }
             _ if secondary => Edit::Ignored,
@@ -110,42 +203,29 @@ impl TextField {
         edit
     }
 
-    fn insert(&mut self, text: &str) {
-        if std::mem::take(&mut self.all_selected) {
-            self.text.clear();
-        }
-        self.text.push_str(text);
-    }
-
     /// Texte validé par une méthode de saisie (lettres accentuées, touches mortes) :
     /// la touche équivalente, sans nom pour qu'aucun raccourci ne s'y applique.
     pub fn composed(text: &str) -> Keystroke {
         Keystroke { modifiers: Default::default(), key: String::new(), key_char: Some(text.to_owned()) }
     }
 
-    /// Ctrl+Retour arrière : efface jusqu'au séparateur précédent (`/`, `-`, `_`, espace).
-    fn delete_word(&mut self) {
-        let is_separator = |c: char| matches!(c, '/' | '-' | '_' | '.' | ' ');
-        let trimmed = self.text.trim_end_matches(is_separator).len();
-        let start = self.text[..trimmed].rfind(is_separator).map_or(0, |i| i + 1);
-        self.text.truncate(start);
-    }
-
-    /// Texte du champ, ou `placeholder` s'il est vide, suivi du curseur.
+    /// Texte du champ avec le curseur et la sélection, ou `placeholder` s'il est vide.
     pub fn render(&self, placeholder: &'static str) -> Div {
+        let caret = || div().flex_none().w(px(1.5)).h(px(15.0)).bg(theme::accent());
         if self.is_empty() {
-            return div().flex().text_color(theme::text_faint()).child(placeholder);
+            return div().flex().items_center().child(caret()).child(div().text_color(theme::text_faint()).child(placeholder));
         }
-        div()
-            .flex()
-            .min_w_0()
-            .text_color(theme::text())
-            .child(
-                div()
-                    .when(self.all_selected, |d| d.rounded_sm().bg(theme::accent().opacity(0.28)))
-                    .child(self.text.clone()),
-            )
-            .child(div().text_color(theme::accent()).child("▏"))
+        let span = |text: &str| div().flex_none().whitespace_nowrap().child(text.to_owned());
+        let (start, end) = self.selection().map_or((self.cursor, self.cursor), |r| (r.start, r.end));
+        let selected = span(&self.text[start..end]).rounded_sm().bg(theme::accent().opacity(0.28));
+        let (before, middle, after) = (&self.text[..start], selected, &self.text[end..]);
+        let row = div().flex().items_center().min_w_0().text_color(theme::text()).child(span(before));
+        // Le curseur est au bord de la sélection où il se trouve.
+        if self.cursor == start {
+            row.child(caret()).when(start != end, |d| d.child(middle)).child(span(after))
+        } else {
+            row.child(middle).child(caret()).child(span(after))
+        }
     }
 }
 
@@ -225,6 +305,57 @@ mod tests {
         let mut field = typed("caf");
         assert_eq!(field.apply(&TextField::composed("é"), || None), Edit::Changed);
         assert_eq!(field.as_str(), "café");
+    }
+
+    #[test]
+    fn cursor_moves_and_edits_in_the_middle() {
+        let mut field = typed("feat/login");
+        for _ in 0..5 {
+            field.apply(&key("left"), || None);
+        }
+        field.apply(&key("x"), || None);
+        assert_eq!(field.as_str(), "feat/xlogin");
+        field.apply(&key("backspace"), || None);
+        field.apply(&key("delete"), || None);
+        assert_eq!(field.as_str(), "feat/ogin");
+        field.apply(&key("home"), || None);
+        field.apply(&key("é"), || None);
+        assert_eq!(field.as_str(), "éfeat/ogin");
+        field.apply(&key("end"), || None);
+        field.apply(&key("s"), || None);
+        assert_eq!(field.as_str(), "éfeat/ogins");
+    }
+
+    #[test]
+    fn word_jumps_and_shift_selection() {
+        let mut field = typed("fix ui-redesign");
+        field.apply(&key("ctrl-left"), || None);
+        assert_eq!(field.cursor, "fix ui-".len());
+        field.apply(&key("ctrl-left"), || None);
+        assert_eq!(field.cursor, "fix ".len());
+        field.apply(&key("ctrl-right"), || None);
+        field.apply(&key("right"), || None);
+        field.apply(&key("ctrl-shift-right"), || None);
+        assert_eq!(field.apply(&key("ctrl-c"), || None), Edit::Copy { text: "redesign".into(), cut: false });
+        // Sans Shift, la flèche réduit la sélection à son bord.
+        field.apply(&key("left"), || None);
+        assert_eq!(field.cursor, "fix ui-".len());
+        field.apply(&key("shift-home"), || None);
+        field.apply(&key("y"), || None);
+        assert_eq!(field.as_str(), "yredesign");
+        field.apply(&key("ctrl-delete"), || None);
+        assert_eq!(field.as_str(), "y");
+    }
+
+    #[test]
+    fn multibyte_characters_are_never_split() {
+        let mut field = typed("çà");
+        field.apply(&key("left"), || None);
+        field.apply(&key("backspace"), || None);
+        assert_eq!(field.as_str(), "à");
+        field.apply(&key("right"), || None);
+        field.apply(&key("right"), || None);
+        assert_eq!(field.cursor, "à".len());
     }
 
     #[test]
