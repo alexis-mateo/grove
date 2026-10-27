@@ -59,10 +59,15 @@ garde l'ancien binaire jusqu'à sa fermeture.
 | `Ctrl+Shift+G` | Sélecteur de branches (chercher, changer, créer depuis la branche courante ou la branche principale, supprimer, déplacer le travail dans un worktree) |
 | `Ctrl+Shift+N` | Nouvel espace de travail (worktree) ; `Maj+Entrée` l'ouvre avec Claude |
 | `Ctrl+Shift+M` | Onglet Claude : basculer entre le terminal (TUI officiel) et la vue native |
-| `Ctrl+Shift+V` | Coller |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copier la sélection / coller |
 | `Shift+PageUp/PageDown` | Défiler dans le scrollback |
 
 Clic milieu sur un onglet : le fermer.
+
+Sélection dans le terminal : glisser, double-clic (mot), triple-clic (ligne).
+Elle devient la sélection primaire, collée par un clic milieu. Quand le
+programme capte la souris (vim, htop, certains TUI), `Shift` garde la
+sélection pour Grove.
 
 Liens du terminal (URL du texte et hyperliens OSC 8, schémas `http(s)`,
 `file`, `mailto`, `ftp`, `ssh`, `git`) : soulignés au survol avec `Ctrl`,

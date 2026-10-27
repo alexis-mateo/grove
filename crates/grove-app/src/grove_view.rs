@@ -67,6 +67,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("ctrl-shift-g", OpenBranches, None),
         KeyBinding::new("ctrl-shift-n", NewWorkspace, None),
         KeyBinding::new("ctrl-shift-m", ToggleClaudeView, None),
+        KeyBinding::new("ctrl-shift-c", crate::terminal_view::Copy, Some("Terminal")),
+        KeyBinding::new("ctrl-shift-v", crate::terminal_view::Paste, Some("Terminal")),
     ]
 }
 

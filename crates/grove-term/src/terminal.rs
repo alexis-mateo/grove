@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::search::RegexSearch;
@@ -23,6 +24,17 @@ use crate::pty::GraphicsPty;
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::term::cell::Flags as CellFlags;
 pub use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+
+/// Ce que couvre une sélection à la souris.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionKind {
+    /// Caractère par caractère (glisser).
+    Simple,
+    /// Mots entiers (double-clic).
+    Word,
+    /// Lignes entières (triple-clic).
+    Line,
+}
 
 /// Événements remontés à l'UI. Le callback est appelé depuis le thread d'E/S.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,6 +193,41 @@ impl Terminal {
         links::link_at(&term, &mut self.url_regex.lock().unwrap(), point)
     }
 
+    /// Commence une sélection à la cellule visible (`row`, `column`) ; `right` :
+    /// le pointeur est dans la moitié droite de la cellule.
+    pub fn start_selection(&self, kind: SelectionKind, row: usize, column: usize, right: bool) {
+        let mut term = self.term.lock();
+        let ty = match kind {
+            SelectionKind::Simple => SelectionType::Simple,
+            SelectionKind::Word => SelectionType::Semantic,
+            SelectionKind::Line => SelectionType::Lines,
+        };
+        let point = visible_point(&term, row, column);
+        term.selection = Some(Selection::new(ty, point, side(right)));
+    }
+
+    /// Étend la sélection en cours jusqu'à la cellule visible (`row`, `column`).
+    pub fn extend_selection(&self, row: usize, column: usize, right: bool) {
+        let mut term = self.term.lock();
+        let point = visible_point(&term, row, column);
+        if let Some(selection) = &mut term.selection {
+            selection.update(point, side(right));
+        }
+    }
+
+    pub fn clear_selection(&self) {
+        self.term.lock().selection = None;
+    }
+
+    /// Texte sélectionné ; `None` si la sélection est vide.
+    pub fn selection_text(&self) -> Option<String> {
+        let term = self.term.lock();
+        if term.selection.as_ref().is_none_or(Selection::is_empty) {
+            return None;
+        }
+        term.selection_to_string().filter(|text| !text.is_empty())
+    }
+
     pub fn palette(&self) -> &Palette {
         &self.palette
     }
@@ -306,6 +353,17 @@ impl Snapshot {
         text.truncate(text.trim_end().len());
         text
     }
+}
+
+/// Point de la grille sous la cellule visible (`row`, `column`), bornée à l'écran.
+fn visible_point(term: &Term<Listener>, row: usize, column: usize) -> Point {
+    let offset = term.grid().display_offset() as i32;
+    let row = row.min(term.screen_lines().saturating_sub(1)) as i32;
+    Point::new(Line(row - offset), Column(column.min(term.columns().saturating_sub(1))))
+}
+
+fn side(right: bool) -> Side {
+    if right { Side::Right } else { Side::Left }
 }
 
 #[derive(Clone, Copy)]
@@ -491,6 +549,31 @@ mod tests {
         assert_eq!(rx.recv_timeout(timeout).unwrap(), None);
         // Les séquences n'apparaissent pas à l'écran (l'écho de la saisie passe à la ligne).
         wait_for(&terminal, |s| s.line_text(0) == "a" && s.line_text(1) == "b");
+    }
+
+    #[test]
+    fn selects_characters_words_and_lines() {
+        let mut options = TerminalOptions::new("/bin/sh");
+        options.args = vec!["-c".into(), "printf 'un deux trois\\nquatre'; sleep 5".into()];
+        let terminal = Terminal::spawn(options, |_| {}).unwrap();
+        wait_for(&terminal, |s| s.line_text(1) == "quatre");
+
+        assert_eq!(terminal.selection_text(), None);
+        terminal.start_selection(SelectionKind::Simple, 0, 3, false);
+        assert_eq!(terminal.selection_text(), None, "un clic seul ne sélectionne rien");
+        terminal.extend_selection(0, 6, true);
+        assert_eq!(terminal.selection_text().as_deref(), Some("deux"));
+        terminal.extend_selection(1, 1, true);
+        assert_eq!(terminal.selection_text().as_deref(), Some("deux trois\nqu"));
+
+        terminal.start_selection(SelectionKind::Word, 0, 9, false);
+        assert_eq!(terminal.selection_text().as_deref(), Some("trois"));
+        terminal.start_selection(SelectionKind::Line, 1, 2, false);
+        assert_eq!(terminal.selection_text().as_deref(), Some("quatre\n"), "la ligne entière, fin comprise");
+        assert!(terminal.snapshot().cells.iter().any(|c| c.selected));
+
+        terminal.clear_selection();
+        assert_eq!(terminal.selection_text(), None);
     }
 
     #[test]

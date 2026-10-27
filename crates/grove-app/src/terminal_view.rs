@@ -5,21 +5,23 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gpui::{
-    App, AppContext, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    App, AppContext, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
     Font, FontStyle, FontWeight, Hsla, KeyDownEvent, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent,
-    SharedString, StrikethroughStyle, Task, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div, fill,
-    font, point, prelude::*, px, size,
+    SharedString, StrikethroughStyle, Task, TextRun, UTF16Selection, UnderlineStyle, Window, actions, canvas, div,
+    fill, font, point, prelude::*, px, size,
 };
 use grove_core::Config;
 use grove_term::{
-    CellFlags, CursorShape, Link, Progress, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
-    TerminalOptions,
+    CellFlags, CursorShape, Link, Progress, RenderCell, Rgb, SelectionKind, Snapshot, TermMode, Terminal,
+    TerminalEvent, TerminalOptions,
 };
 
 use crate::images::ImageCache;
 use crate::mouse::{self, Action};
 use crate::{builtin_glyphs, fonts, keys};
+
+actions!(terminal, [Copy, Paste]);
 
 /// Hauteur de ligne relative à la taille de police.
 const LINE_HEIGHT: f32 = 1.3;
@@ -46,6 +48,8 @@ pub struct TerminalView {
     /// Ctrl+clic sur un lien en cours : son relâchement n'est pas transmis au
     /// programme, qui ouvrirait le lien une seconde fois (TUI de Claude Code).
     link_click: bool,
+    /// Sélection à la souris en cours (bouton gauche enfoncé).
+    selecting: bool,
     /// Texte en cours de composition (touche morte, méthode de saisie), affiché au curseur.
     marked_text: Option<String>,
     /// Textures des images du protocole graphique de kitty.
@@ -121,6 +125,7 @@ impl TerminalView {
             mouse_position: None,
             hovered_link: None,
             link_click: false,
+            selecting: false,
             marked_text: None,
             images: Rc::default(),
             _events: events,
@@ -152,14 +157,6 @@ impl TerminalView {
         let keystroke = &event.keystroke;
         let m = &keystroke.modifiers;
 
-        if m.control && m.shift && keystroke.key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.terminal.scroll_to_bottom();
-                self.terminal.paste(&text);
-            }
-            cx.stop_propagation();
-            return;
-        }
         if m.shift && !m.control && (keystroke.key == "pageup" || keystroke.key == "pagedown") {
             let page = self.terminal.snapshot().lines as i32;
             self.terminal.scroll(if keystroke.key == "pageup" { page } else { -page });
@@ -212,6 +209,24 @@ impl TerminalView {
         }
     }
 
+    /// Sans sélection, ne fait rien : surtout pas un ^C envoyé au programme.
+    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self.terminal.selection_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    fn paste_clipboard(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.paste(&text);
+        }
+    }
+
+    fn paste(&self, text: &str) {
+        self.terminal.scroll_to_bottom();
+        self.terminal.paste(text);
+    }
+
     /// Le programme a demandé les événements souris. Shift les garde pour Grove.
     fn reports_mouse(&self, modifiers: &Modifiers) -> bool {
         self.terminal.mode().intersects(TermMode::MOUSE_MODE) && !modifiers.shift
@@ -224,6 +239,14 @@ impl TerminalView {
         let column = (offset.x / layout.cell_width).max(0.0) as usize;
         let row = (offset.y / layout.line_height).max(0.0) as usize;
         (column.min(layout.columns.saturating_sub(1)), row.min(layout.lines.saturating_sub(1)))
+    }
+
+    /// Cellule sous `position`, et si le pointeur est dans sa moitié droite.
+    fn cell_side_at(&self, position: Point<Pixels>) -> (usize, usize, bool) {
+        let (column, row) = self.cell_at(position);
+        let layout = self.layout.get();
+        let x = (position.x - layout.origin.x) / layout.cell_width - column as f32;
+        (column, row, x >= 0.5)
     }
 
     fn report_button(&mut self, button: MouseButton, action: Action, position: Point<Pixels>, modifiers: &Modifiers) {
@@ -251,11 +274,41 @@ impl TerminalView {
         if self.reports_mouse(&event.modifiers) {
             self.report_button(event.button, Action::Press, event.position, &event.modifiers);
             cx.stop_propagation();
+            return;
         }
+        match event.button {
+            MouseButton::Left => {
+                let kind = match event.click_count {
+                    1 => SelectionKind::Simple,
+                    2 => SelectionKind::Word,
+                    _ => SelectionKind::Line,
+                };
+                let (column, row, right) = self.cell_side_at(event.position);
+                self.terminal.start_selection(kind, row, column, right);
+                self.selecting = true;
+                cx.notify();
+            }
+            // Clic du milieu : colle la sélection primaire, comme les autres terminaux sous Linux.
+            MouseButton::Middle => {
+                if let Some(text) = cx.read_from_primary().and_then(|item| item.text()) {
+                    self.paste(&text);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
     }
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Left && std::mem::take(&mut self.link_click) {
+            cx.stop_propagation();
+            return;
+        }
+        if event.button == MouseButton::Left && std::mem::take(&mut self.selecting) {
+            // Ce qui est sélectionné devient la sélection primaire (collée au clic du milieu).
+            if let Some(text) = self.terminal.selection_text() {
+                cx.write_to_primary(ClipboardItem::new_string(text));
+            }
             cx.stop_propagation();
             return;
         }
@@ -283,6 +336,17 @@ impl TerminalView {
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.mouse_position = Some(event.position);
         self.update_hovered_link(&event.modifiers, cx);
+        if self.selecting {
+            if event.pressed_button == Some(MouseButton::Left) {
+                let (column, row, right) = self.cell_side_at(event.position);
+                self.terminal.extend_selection(row, column, right);
+                cx.notify();
+            } else {
+                // Relâché hors du terminal.
+                self.selecting = false;
+            }
+            return;
+        }
         let mode = self.terminal.mode();
         if !self.reports_mouse(&event.modifiers) {
             return;
@@ -350,6 +414,8 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::paste_clipboard))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))

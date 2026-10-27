@@ -253,7 +253,7 @@ Exigences minimales pour un usage quotidien (et pour faire tourner le TUI de Cla
 - couleurs 24 bits, attributs (gras, italique, souligné, inverse) ;
 - redimensionnement (SIGWINCH) ;
 - scrollback configurable, recherche dans le scrollback ;
-- sélection souris, copier/coller, **bracketed paste** ;
+- sélection souris (glisser, double-clic mot, triple-clic ligne ; `Shift` quand le programme capte la souris), copier/coller (`Ctrl+Shift+C/V`, sélection primaire au clic milieu), **bracketed paste** ;
 - reporting souris (pour les TUI) ;
 - saisie clavier complète, y compris les combinaisons Alt/Ctrl et l'IME (texte composé reçu par un `InputHandler` GPUI : sous IBus, une lettre accentuée n'arrive pas comme une frappe) ;
 - liens cliquables (OSC 8 + détection d'URL) : `Ctrl+clic`, soulignés au survol avec `Ctrl`, schémas connus seulement ;
