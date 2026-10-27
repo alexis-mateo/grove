@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use crate::colors::Palette;
 use crate::graphics::{self, Graphics, Image, Placeholder};
 use crate::links::{self, Link};
+use crate::progress::Progress;
 use crate::pty::GraphicsPty;
 
 pub use alacritty_terminal::term::TermMode;
@@ -31,6 +32,8 @@ pub enum TerminalEvent {
     /// Titre défini par le programme (OSC 0/2). `None` : titre réinitialisé.
     Title(Option<String>),
     Bell,
+    /// Barre de progression (OSC 9;4). `None` : retirée.
+    Progress(Option<Progress>),
     /// Le processus du PTY s'est terminé.
     Exited(Option<i32>),
 }
@@ -97,7 +100,8 @@ impl Terminal {
         let config = term::Config { scrolling_history: options.scrollback, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, listener.clone())));
         let graphics = Arc::new(Mutex::new(Graphics::default()));
-        let pty = GraphicsPty::new(pty, graphics.clone(), listener.sender.clone()).context("création du PTY")?;
+        let pty = GraphicsPty::new(pty, graphics.clone(), listener.sender.clone(), listener.on_event.clone())
+            .context("création du PTY")?;
 
         let event_loop = EventLoop::new(term.clone(), listener.clone(), pty, true, false)
             .context("démarrage de la boucle d'E/S du terminal")?;
@@ -465,6 +469,28 @@ mod tests {
         let image = &snapshot.images[&42];
         assert_eq!((image.width, image.height, image.columns, image.rows), (1, 1, 2, 1));
         assert_eq!(*image.rgba, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn reports_progress() {
+        let (tx, rx) = mpsc::channel();
+        let mut options = TerminalOptions::new("/bin/sh");
+        // Une lecture ne remonte que l'état final : `read` sépare les deux séquences.
+        options.args =
+            vec!["-c".into(), r"printf '\033]9;4;3;\007a'; read x; printf '\033]9;4;0;\033\\b'; sleep 5".into()];
+        let terminal = Terminal::spawn(options, move |e| {
+            if let TerminalEvent::Progress(progress) = e {
+                let _ = tx.send(progress);
+            }
+        })
+        .unwrap();
+
+        let timeout = Duration::from_secs(5);
+        assert_eq!(rx.recv_timeout(timeout).unwrap(), Some(Progress::Indeterminate));
+        terminal.write(&b"\r"[..]);
+        assert_eq!(rx.recv_timeout(timeout).unwrap(), None);
+        // Les séquences n'apparaissent pas à l'écran (l'écho de la saisie passe à la ligne).
+        wait_for(&terminal, |s| s.line_text(0) == "a" && s.line_text(1) == "b");
     }
 
     #[test]

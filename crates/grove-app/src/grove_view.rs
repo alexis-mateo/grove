@@ -458,6 +458,10 @@ impl GroveView {
         // Claude Code n'affiche les images (protocole de kitty) que dans kitty et
         // Ghostty, reconnus par leur nom ; Grove les gère aussi, on le lui dit.
         options.env.insert("CLAUDE_CODE_FORCE_TERMINAL_IMAGES".into(), "1".into());
+        // De même, il n'émet sa barre de progression (OSC 9;4) que pour ConEmu,
+        // Ghostty et iTerm2. Une variable de ConEmu suffit : elle ne change rien
+        // d'autre hors de Windows, et `TERM_PROGRAM` reste prioritaire pour nommer le terminal.
+        options.env.insert("ConEmuTask".into(), "{Grove}".into());
         options
     }
 

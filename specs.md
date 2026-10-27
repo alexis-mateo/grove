@@ -258,6 +258,7 @@ Exigences minimales pour un usage quotidien (et pour faire tourner le TUI de Cla
 - saisie clavier complète, y compris les combinaisons Alt/Ctrl et l'IME (texte composé reçu par un `InputHandler` GPUI : sous IBus, une lettre accentuée n'arrive pas comme une frappe) ;
 - liens cliquables (OSC 8 + détection d'URL) : `Ctrl+clic`, soulignés au survol avec `Ctrl`, schémas connus seulement ;
 - **OSC 7** (cwd courant) et titre de fenêtre (OSC 0/2) ;
+- barre de progression (**OSC 9;4**, celle de ConEmu et Windows Terminal) : trait au pied de l'onglet, couleur d'accent, rouge en erreur, ambre en pause, segment qui va et vient si l'avancement est inconnu. Claude Code ne l'émet que pour ConEmu, Ghostty et iTerm2 : Grove définit `ConEmuTask` dans ses terminaux ;
 - performances : pas de lag sur une sortie massive (`cat` d'un gros fichier, redraws de Claude).
 
 > Risque n°1 du projet : l'émulation terminal concentre environ la moitié de l'effort. S'appuyer au maximum sur `crates/terminal` et `crates/terminal_view` de Zed.

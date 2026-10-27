@@ -1,5 +1,6 @@
 //! PTY d'alacritty dont la lecture passe par [`ApcFilter`] : les commandes
 //! graphiques sont exécutées avant que le parseur ne voie le reste du flux.
+//! Le [`ProgressScanner`] y repère aussi la barre de progression.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -11,6 +12,8 @@ use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite, Pty};
 use polling::{Event, PollMode, Poller};
 
 use crate::graphics::{ApcFilter, Graphics};
+use crate::progress::ProgressScanner;
+use crate::terminal::TerminalEvent;
 
 pub(crate) struct GraphicsPty {
     pty: Pty,
@@ -18,7 +21,12 @@ pub(crate) struct GraphicsPty {
 }
 
 impl GraphicsPty {
-    pub fn new(pty: Pty, graphics: Arc<Mutex<Graphics>>, replies: Arc<OnceLock<EventLoopSender>>) -> io::Result<Self> {
+    pub fn new(
+        pty: Pty,
+        graphics: Arc<Mutex<Graphics>>,
+        replies: Arc<OnceLock<EventLoopSender>>,
+        on_event: Arc<dyn Fn(TerminalEvent) + Send + Sync>,
+    ) -> io::Result<Self> {
         // Second descripteur sur le même PTY (non bloquant lui aussi) : la boucle
         // d'E/S surveille l'original et lit par celui-ci.
         let file = pty.file().try_clone()?;
@@ -27,6 +35,8 @@ impl GraphicsPty {
             filter: ApcFilter::default(),
             graphics,
             replies,
+            progress: ProgressScanner::default(),
+            on_event,
             raw: vec![0; 0x1_0000].into_boxed_slice(),
             pending: Vec::new(),
             read_from: 0,
@@ -40,6 +50,8 @@ pub(crate) struct FilteredReader {
     filter: ApcFilter,
     graphics: Arc<Mutex<Graphics>>,
     replies: Arc<OnceLock<EventLoopSender>>,
+    progress: ProgressScanner,
+    on_event: Arc<dyn Fn(TerminalEvent) + Send + Sync>,
     raw: Box<[u8]>,
     /// Octets filtrés pas encore rendus à l'appelant.
     pending: Vec<u8>,
@@ -71,6 +83,9 @@ impl Read for FilteredReader {
                     let _ = sender.send(Msg::Input(reply.into_bytes().into()));
                 }
             });
+            if let Some(progress) = self.progress.scan(&self.pending) {
+                (self.on_event)(TerminalEvent::Progress(progress));
+            }
             // Lecture faite uniquement de commandes : on relit, jusqu'à du texte ou `WouldBlock`.
         }
     }

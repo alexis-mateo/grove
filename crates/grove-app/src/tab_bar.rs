@@ -2,10 +2,14 @@
 //! titre : son espace libre déplace la fenêtre, les boutons de la fenêtre sont
 //! à droite.
 
+use std::time::Duration;
+
 use gpui::{
-    Context, KeyDownEvent, MouseButton, Render, SharedString, Window, div, prelude::*, px,
+    Animation, AnimationExt, Context, KeyDownEvent, MouseButton, Render, SharedString, Window, div, ease_in_out,
+    prelude::*, px, relative,
 };
 use grove_core::{ClaudeView, TabId, TabKind};
+use grove_term::Progress;
 
 use crate::claude::status_badge;
 use crate::grove_view::{GroveView, NewTab, ToggleSidebar};
@@ -16,6 +20,8 @@ use crate::ui::{Icon, icon, icon_button, sized_icon, tooltip, vertical_divider};
 use crate::window_frame::{TOP_BAR_HEIGHT, drag_region, window_controls};
 
 const TAB_HEIGHT: gpui::Pixels = px(28.0);
+/// Part de la barre occupée par le segment qui va et vient quand l'avancement est inconnu.
+const INDETERMINATE_WIDTH: f32 = 0.35;
 
 /// Onglet en cours de glisser-déposer.
 #[derive(Clone)]
@@ -183,6 +189,8 @@ impl GroveView {
                 .into_any_element(),
         };
 
+        let progress = self.terminals.get(&id).and_then(|terminal| terminal.read(cx).progress());
+
         let close_group = SharedString::from(format!("close-{id}"));
         let close = div()
             .id(close_group.clone())
@@ -207,6 +215,7 @@ impl GroveView {
         div()
             .id(SharedString::from(format!("tab-{id}")))
             .group(group)
+            .relative()
             .h(TAB_HEIGHT)
             .max_w(px(220.0))
             .min_w(px(64.0))
@@ -245,6 +254,7 @@ impl GroveView {
             .child(leading)
             .child(title)
             .child(close)
+            .children(progress.map(|progress| progress_bar(id, progress)))
             .into_any_element()
     }
 
@@ -271,5 +281,37 @@ impl GroveView {
         }
         cx.stop_propagation();
         cx.notify();
+    }
+}
+
+/// Barre de progression du programme (OSC 9;4, celle de Claude Code), au pied de l'onglet.
+fn progress_bar(id: TabId, progress: Progress) -> impl IntoElement {
+    let color = match progress {
+        Progress::Error(_) => theme::danger(),
+        Progress::Paused(_) => theme::waiting(),
+        Progress::Normal(_) | Progress::Indeterminate => theme::accent(),
+    };
+    // Une erreur ou une pause sans avancement se voit quand même : barre pleine.
+    let value = match progress {
+        Progress::Error(0) | Progress::Paused(0) => Some(100),
+        progress => progress.value(),
+    };
+    let track = div()
+        .absolute()
+        .left_2()
+        .right_2()
+        .bottom(px(2.0))
+        .h(px(2.0))
+        .rounded_full()
+        .overflow_hidden()
+        .bg(theme::border());
+    let fill = div().absolute().top_0().h_full().rounded_full().bg(color);
+    match value {
+        Some(value) => track.child(fill.left_0().w(relative(value as f32 / 100.0))),
+        None => track.child(fill.w(relative(INDETERMINATE_WIDTH)).with_animation(
+            SharedString::from(format!("tab-progress-{id}")),
+            Animation::new(Duration::from_millis(1400)).repeat().with_easing(ease_in_out),
+            |fill, delta| fill.left(relative(delta * (1.0 + INDETERMINATE_WIDTH) - INDETERMINATE_WIDTH)),
+        )),
     }
 }

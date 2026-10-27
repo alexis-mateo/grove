@@ -7,12 +7,14 @@
 mod colors;
 mod graphics;
 mod links;
+mod progress;
 mod pty;
 mod terminal;
 
 pub use colors::Palette;
 pub use graphics::{Image, Placeholder};
 pub use links::{Link, is_openable};
+pub use progress::Progress;
 pub use terminal::{
     CellFlags, CursorShape, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
     TerminalOptions,

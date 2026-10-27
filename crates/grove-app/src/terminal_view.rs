@@ -13,7 +13,7 @@ use gpui::{
 };
 use grove_core::Config;
 use grove_term::{
-    CellFlags, CursorShape, Link, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
+    CellFlags, CursorShape, Link, Progress, RenderCell, Rgb, Snapshot, TermMode, Terminal, TerminalEvent,
     TerminalOptions,
 };
 
@@ -30,6 +30,8 @@ pub struct TerminalView {
     font: Font,
     font_size: Pixels,
     title: Option<String>,
+    /// Barre de progression du programme (OSC 9;4), affichée dans l'onglet.
+    progress: Option<Progress>,
     exited: Option<Option<i32>>,
     /// Défilement en pixels pas encore converti en lignes.
     pending_scroll: f32,
@@ -108,6 +110,7 @@ impl TerminalView {
             font: font(fonts::resolve_family(&config.font.family)),
             font_size: px(config.font.size),
             title: None,
+            progress: None,
             exited: None,
             pending_scroll: 0.0,
             layout: Rc::new(Cell::new(GridLayout {
@@ -128,11 +131,17 @@ impl TerminalView {
         self.title.as_deref()
     }
 
+    pub fn progress(&self) -> Option<Progress> {
+        self.progress
+    }
+
     fn handle_event(&mut self, event: TerminalEvent, cx: &mut Context<Self>) {
         match event {
             TerminalEvent::Wakeup | TerminalEvent::Bell => {}
             TerminalEvent::Title(title) => self.title = title,
+            TerminalEvent::Progress(progress) => self.progress = progress,
             TerminalEvent::Exited(code) => {
+                self.progress = None;
                 self.exited = Some(code);
                 cx.emit(Exited);
             }
