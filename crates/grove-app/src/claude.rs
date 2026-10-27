@@ -293,6 +293,7 @@ impl GroveView {
 
     pub(crate) fn new_claude_tab(&mut self, session_id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.state.active_workspace else { return };
+        self.leave_settings(cx);
         if let Some(workspace) = self.state.workspace_mut(key) {
             let shared = workspace.kind == grove_core::WorkspaceKind::Direct
                 && workspace.tabs.iter().any(|t| matches!(t.kind, TabKind::Claude { .. }));
@@ -577,6 +578,15 @@ impl GroveView {
 /// Interroge l'API d'usage au démarrage puis toutes les 3 min (opt-in, specs §8.5).
 /// Pas d'appel tant que la statusline fournit des limites récentes : ccstatusline
 /// interroge le même endpoint avec le même jeton, et les appels s'additionnent.
+impl ClaudeRuntime {
+    /// Active ou coupe la lecture de l'usage par l'API (Paramètres), sans redémarrer.
+    pub(crate) fn set_usage_api(&mut self, enabled: bool, cx: &mut Context<GroveView>) {
+        if enabled != self._usage_api.is_some() {
+            self._usage_api = enabled.then(|| poll_usage_api(cx));
+        }
+    }
+}
+
 fn poll_usage_api(cx: &mut Context<GroveView>) -> Task<()> {
     use grove_claude::usage_api::{self, FetchError, POLL_INTERVAL, RATE_LIMIT_BACKOFF};
     cx.spawn(async move |this, cx| {

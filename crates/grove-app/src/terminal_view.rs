@@ -21,7 +21,7 @@ use crate::images::ImageCache;
 use crate::mouse::{self, Action};
 use crate::{builtin_glyphs, fonts, keys};
 
-actions!(terminal, [Copy, Paste]);
+actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 
 /// Hauteur de ligne relative à la taille de police.
 const LINE_HEIGHT: f32 = 1.3;
@@ -155,15 +155,7 @@ impl TerminalView {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        let m = &keystroke.modifiers;
 
-        if m.shift && !m.control && (keystroke.key == "pageup" || keystroke.key == "pagedown") {
-            let page = self.terminal.snapshot().lines as i32;
-            self.terminal.scroll(if keystroke.key == "pageup" { page } else { -page });
-            cx.notify();
-            cx.stop_propagation();
-            return;
-        }
 
         let app_cursor = self.terminal.mode().contains(TermMode::APP_CURSOR);
         if let Some(bytes) = keys::to_esc(keystroke, app_cursor) {
@@ -207,6 +199,19 @@ impl TerminalView {
             self.terminal.scroll(whole as i32);
             cx.notify();
         }
+    }
+
+    /// Police des Paramètres, appliquée sans relancer le programme.
+    pub fn set_font(&mut self, family: &str, size: f32, cx: &mut Context<Self>) {
+        self.font = font(fonts::resolve_family(family));
+        self.font_size = px(size);
+        cx.notify();
+    }
+
+    fn scroll_page(&mut self, up: bool, cx: &mut Context<Self>) {
+        let page = self.terminal.snapshot().lines as i32;
+        self.terminal.scroll(if up { page } else { -page });
+        cx.notify();
     }
 
     /// Sans sélection, ne fait rien : surtout pas un ^C envoyé au programme.
@@ -416,6 +421,8 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste_clipboard))
+            .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.scroll_page(true, cx)))
+            .on_action(cx.listener(|this, _: &ScrollPageDown, _, cx| this.scroll_page(false, cx)))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))

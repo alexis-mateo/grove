@@ -19,6 +19,7 @@ use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
 use crate::native_view::{NativeView, NativeViewEvent};
 use crate::profiles::{Offline, ProfileCatalog, ProfilePicker};
+use crate::settings::{ConfigWatch, Settings};
 use crate::sidebar::{DEFAULT_SIDEBAR_WIDTH, DraggedSidebar};
 use crate::terminal_view::{Exited, TerminalView};
 use crate::text_field::TextField;
@@ -44,6 +45,7 @@ actions!(
         OpenBranches,
         NewWorkspace,
         ToggleClaudeView,
+        OpenSettings,
     ]
 );
 
@@ -70,6 +72,10 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("ctrl-shift-m", ToggleClaudeView, None),
         KeyBinding::new("ctrl-shift-c", crate::terminal_view::Copy, Some("Terminal")),
         KeyBinding::new("ctrl-shift-v", crate::terminal_view::Paste, Some("Terminal")),
+        KeyBinding::new("shift-pageup", crate::terminal_view::ScrollPageUp, Some("Terminal")),
+        KeyBinding::new("shift-pagedown", crate::terminal_view::ScrollPageDown, Some("Terminal")),
+        // Ctrl+, n'envoie rien d'utile aux programmes du terminal (specs §11.3).
+        KeyBinding::new("ctrl-,", OpenSettings, None),
     ]
 }
 
@@ -97,7 +103,7 @@ pub(crate) struct Rename {
 }
 
 pub struct GroveView {
-    paths: Paths,
+    pub(crate) paths: Paths,
     pub(crate) config: Config,
     pub(crate) state: State,
     pub(crate) terminals: HashMap<TabId, Entity<TerminalView>>,
@@ -119,6 +125,9 @@ pub struct GroveView {
     pub(crate) profiles: ProfileCatalog,
     /// Onglets SSH sans processus : pas encore connectés, ou connexion fermée.
     pub(crate) offline: HashMap<TabId, Offline>,
+    /// Page Paramètres ouverte à la place des onglets.
+    pub(crate) settings: Option<Settings>,
+    pub(crate) config_watch: Option<ConfigWatch>,
     pub(crate) worktree_dialog: Option<WorktreeDialog>,
     pub(crate) remove_dialog: Option<RemoveDialog>,
     pub(crate) notice: Option<Notice>,
@@ -186,6 +195,8 @@ impl GroveView {
             profile_picker: None,
             profiles: ProfileCatalog::default(),
             offline: HashMap::new(),
+            settings: None,
+            config_watch: None,
             worktree_dialog: None,
             remove_dialog: None,
             notice: None,
@@ -223,6 +234,7 @@ impl GroveView {
         }
         this.profiles.reload_ssh();
         this.mark_restored_ssh_tabs();
+        this.watch_config(cx);
 
         match open {
             Some(path) => this.open_project(&path, window, cx),
@@ -363,6 +375,7 @@ impl GroveView {
         if workspace.tabs.is_empty() {
             workspace.add_terminal_tab();
         }
+        self.leave_settings(cx);
         self.state.active_workspace = Some(key);
         self.rename = None;
         self.claude.history = None;
@@ -381,6 +394,7 @@ impl GroveView {
         };
         workspace.active_tab = Some(tab);
         self.state.active_workspace = Some(key);
+        self.leave_settings(cx);
         self.save();
         self.focus_active(window, cx);
         cx.notify();
@@ -592,6 +606,10 @@ impl GroveView {
     }
 
     pub(crate) fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Les onglets sont cachés par la page Paramètres : elle garde le focus.
+        if let Some(settings) = &self.settings {
+            return window.focus(&settings.focus);
+        }
         let focus = self.active_view(window, cx).and_then(|_| {
             let tab = self.active_tab()?.1;
             match self.natives.get(&tab) {
@@ -694,7 +712,9 @@ impl EntityInputHandler for GroveView {
     fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let event = KeyDownEvent { keystroke: TextField::composed(text), is_held: false };
         let focused = |focus: &FocusHandle| focus.is_focused(window);
-        if self.rename.as_ref().is_some_and(|r| focused(&r.focus)) {
+        if self.settings_has_focus(window) {
+            self.settings_key_down(&event, window, cx);
+        } else if self.rename.as_ref().is_some_and(|r| focused(&r.focus)) {
             self.rename_key_down(&event, window, cx);
         } else if self.branch_picker.as_ref().is_some_and(|p| focused(&p.focus)) {
             self.branch_picker_key_down(&event, window, cx);
@@ -743,6 +763,7 @@ impl Render for GroveView {
             .and_then(|(p, _)| self.state.project(p))
             .map(|p| p.name.clone());
         let title: SharedString = match (active, &project_name) {
+            _ if self.settings.is_some() => "Paramètres — Grove".into(),
             (Some((_, tab)), Some(project)) => {
                 format!("{} — {project} — Grove", self.tab_label(tab, cx)).into()
             }
@@ -831,6 +852,13 @@ impl Render for GroveView {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleClaudeView, window, cx| this.toggle_claude_view(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if this.settings.is_some() {
+                    this.close_settings(window, cx);
+                } else {
+                    this.open_settings(None, None, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleSessionPanel, _, cx| {
                 this.claude.panel_visible = !this.claude.panel_visible;
                 cx.notify();
@@ -844,7 +872,10 @@ impl Render for GroveView {
             .bg(theme::background())
             .text_color(theme::text())
             .when(self.sidebar_visible, |d| d.child(self.render_sidebar(cx)))
-            .child(main)
+            .child(match self.render_settings(window, cx) {
+                Some(settings) => settings,
+                None => main.into_any_element(),
+            })
             .when(self.sidebar_visible, |d| d.child(self.render_sidebar_handle(cx)));
 
         window_frame::frame(content.into_any_element(), window)

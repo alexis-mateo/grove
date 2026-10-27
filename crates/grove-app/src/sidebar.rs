@@ -124,6 +124,36 @@ impl GroveView {
                     .children(projects),
             )
             .children(self.render_usage(cx))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_0p5()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        icon_button("open-settings", Icon::Settings)
+                            .when(self.settings.is_some(), |b| b.bg(theme::selected()))
+                            .tooltip(tooltip("Paramètres · Ctrl+,"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.settings.is_some() {
+                                    this.close_settings(window, cx);
+                                } else {
+                                    this.open_settings(None, None, window, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        icon_button("open-shortcuts", Icon::Keyboard)
+                            .tooltip(tooltip("Raccourcis clavier"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings(Some(crate::settings::Section::Shortcuts), None, window, cx)
+                            })),
+                    ),
+            )
     }
 
     /// Poignée sur le bord droit de la sidebar. Posée par-dessus tout le reste

@@ -3226,6 +3226,7 @@ dependencies = [
  "image",
  "jiff",
  "log",
+ "notify",
  "notify-rust",
  "serde",
  "serde_json",

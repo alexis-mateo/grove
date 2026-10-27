@@ -12,6 +12,7 @@ mod mouse;
 mod native_view;
 mod profiles;
 mod settings;
+mod shortcuts;
 mod sidebar;
 mod tab_bar;
 mod terminal_view;

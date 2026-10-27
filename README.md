@@ -7,7 +7,8 @@ Terminal multi-projets orienté Claude Code. Voir [specs.md](specs.md).
 Phases 0 à 3 : terminal, sidebar, onglets, branches, restauration ; onglets
 Claude suivis par les hooks, usage du compte ; worktrees (création, promotion,
 suppression, import). Phase 4 commencée : vue native des sessions Claude
-(stream-json, permissions, bascule avec le terminal).
+(stream-json, permissions, bascule avec le terminal). Phase 5 : profils de
+terminal (shell, SSH, commande), page Paramètres et liste des raccourcis.
 
 | Crate | Rôle |
 |---|---|
@@ -46,7 +47,7 @@ garde l'ancien binaire jusqu'à sa fermeture.
 
 | Touche | Action |
 |---|---|
-| `Ctrl+Shift+T` / `Ctrl+Shift+W` | Nouvel onglet / fermer l'onglet |
+| `Ctrl+Shift+T` / `Ctrl+Shift+W` | Nouvel onglet (profil par défaut) / fermer l'onglet |
 | `Ctrl+Tab`, `Ctrl+PageDown` / `Ctrl+Shift+Tab`, `Ctrl+PageUp` | Onglet suivant / précédent |
 | `Ctrl+Shift+PageUp/PageDown` | Déplacer l'onglet (ou glisser-déposer) |
 | `Ctrl+Shift+R` | Renommer l'onglet (ou double-clic ; titre vide = titre du programme) |
@@ -61,6 +62,11 @@ garde l'ancien binaire jusqu'à sa fermeture.
 | `Ctrl+Shift+M` | Onglet Claude : basculer entre le terminal (TUI officiel) et la vue native |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copier la sélection / coller |
 | `Shift+PageUp/PageDown` | Défiler dans le scrollback |
+| `Ctrl+,` | Paramètres (`Échap` les ferme) |
+
+La liste complète, avec recherche, est dans Paramètres › Raccourcis clavier
+(icône clavier en pied de sidebar) : elle est générée depuis les raccourcis
+enregistrés.
 
 Clic milieu sur un onglet : le fermer.
 
@@ -97,10 +103,50 @@ branche locale et la distante ont divergé, rien n'est fait et un message le dit
 
 ## Fichiers
 
-- `~/.config/grove/config.toml` : configuration (`[font] family/size`, `[terminal] shell/scrollback`)
+- `~/.config/grove/config.toml` : configuration (`[font]`, `[terminal]`, `[[terminal.profiles]]`, `[claude]`),
+  modifiable depuis Paramètres (`Ctrl+,` ou l'engrenage en pied de sidebar). La page
+  écrit le fichier en gardant commentaires et mise en forme ; une modification à la
+  main s'applique sans redémarrer (police des terminaux ouverts comprise ; shell,
+  scrollback et commandes valent pour les prochains onglets).
 - `~/.local/share/grove/state.json` : état restauré au démarrage (phase 1)
 
 `GROVE_CONFIG_DIR` et `GROVE_DATA_DIR` remplacent ces dossiers.
+
+## Profils de terminal
+
+Un profil décrit ce qu'un onglet lance : le shell, une connexion SSH ou une
+commande. Flèche à côté du `+` (ou clic droit sur le `+`) : liste des profils,
+avec recherche. `Ctrl+Shift+T` ouvre le profil par défaut.
+
+```toml
+[terminal]
+default_profile = "staging"      # optionnel ; sinon le shell
+
+[[terminal.profiles]]
+name = "staging"
+kind = "ssh"                     # déduit sinon : host → ssh, command → commande
+host = "staging-web-1"           # alias de ~/.ssh/config ou nom d'hôte
+user = "deploy"                  # optionnels : port, identity, jump, options = ["ServerAliveInterval=30"]
+remote_command = "cd /var/www/app && exec $SHELL -l"
+reconnect = "auto"               # au redémarrage ; par défaut, bouton « Se connecter »
+
+[[terminal.profiles]]
+name = "db"
+command = "docker compose exec db psql -U app"
+cwd = "backend"                  # relatif à l'espace de travail
+env = { PGUSER = "app" }
+```
+
+- Profils globaux dans `config.toml`, par projet dans `.grove.toml` (même
+  syntaxe, versionnable) ; un profil de projet masque un profil global du même nom.
+- Les entrées `Host` de `~/.ssh/config` (hors motifs) sont proposées telles
+  quelles ; un profil Grove qui vise le même hôte les remplace.
+- SSH passe par la commande `ssh` du système : `~/.ssh/config`, agent, clés,
+  `known_hosts` et `ProxyJump` fonctionnent comme d'habitude. Grove ne stocke
+  aucun mot de passe : `ssh` les demande dans le terminal.
+- Onglet SSH : icône serveur, titre = nom du profil. Connexion fermée : bandeau
+  « Connexion fermée (code n) » avec Reconnecter. Au redémarrage, les onglets
+  SSH sont restaurés sans se connecter (bouton ou `Entrée`).
 
 ## Worktrees
 

@@ -163,6 +163,7 @@ impl GroveView {
     /// Ouvre un onglet du profil `name` (`None` : le shell) dans l'espace actif.
     pub(crate) fn open_profile_tab(&mut self, name: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.state.active_workspace else { return };
+        self.leave_settings(cx);
         if let Some(workspace) = self.state.workspace_mut(key) {
             workspace.add_profile_tab(name);
             self.save();
