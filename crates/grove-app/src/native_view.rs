@@ -277,6 +277,12 @@ impl NativeView {
         cx.notify();
     }
 
+    /// Envoie `text` comme si l'utilisateur l'avait tapé (premier message d'une session).
+    pub fn submit(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.composer = text.to_owned();
+        self.send(cx);
+    }
+
     fn send(&mut self, cx: &mut Context<Self>) {
         let text = self.composer.trim().to_owned();
         if text.is_empty() || self.conversation.busy {

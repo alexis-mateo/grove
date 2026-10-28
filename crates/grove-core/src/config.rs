@@ -11,6 +11,55 @@ pub struct Config {
     pub font: FontConfig,
     pub terminal: TerminalConfig,
     pub claude: ClaudeConfig,
+    pub github: GitHubConfig,
+}
+
+/// Actions Claude sur les pull requests (specs §12.1), surchargeables dans `.grove.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitHubConfig {
+    pub review: ReviewConfig,
+    pub address: AddressConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReviewConfig {
+    /// Pour reviewer une PR : un skill (`/morty:review`), lancé avec l'URL de
+    /// la PR en argument, ou un prompt libre, suivi de l'URL.
+    #[serde(alias = "skill")]
+    pub prompt: String,
+    /// Ajouté quand l'auteur a poussé depuis ma dernière review.
+    pub refresh_prompt: String,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            prompt: "/morty:review".into(),
+            refresh_prompt: "L'auteur a répondu ou poussé de nouveaux commits, mets la review à jour.".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AddressConfig {
+    /// Pour traiter les commentaires reçus sur mes PR : skill ou prompt libre,
+    /// suivi de l'URL et des fils qui attendent ma réponse.
+    #[serde(alias = "skill")]
+    pub prompt: String,
+}
+
+impl Default for AddressConfig {
+    fn default() -> Self {
+        Self {
+            prompt: "Analyse les commentaires de review de cette PR et applique les corrections pertinentes. \
+                     Propose ensuite dans le chat une réponse concise en anglais pour chaque fil. \
+                     Ne poste rien sur GitHub avant mon accord : quand je dis go, poste les réponses."
+                .into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,5 +158,13 @@ mod tests {
         assert_eq!(config.font.size, 16.0);
         assert_eq!(config.font.family, "monospace");
         assert_eq!(config.terminal.scrollback, 10_000);
+    }
+
+    #[test]
+    fn github_prompts_have_defaults() {
+        // `skill`, l'ancien nom, est encore lu.
+        let config: Config = toml::from_str("[github.address]\nskill = \"/fix\"\n").unwrap();
+        assert_eq!(config.github.address.prompt, "/fix");
+        assert_eq!(config.github.review.prompt, "/morty:review");
     }
 }

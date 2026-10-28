@@ -92,6 +92,7 @@ impl GroveView {
         self.offline.remove(&pane);
         self.claude.sessions.remove(&pane);
         self.pending_commands.remove(&pane);
+        self.pending_prompts.remove(&pane);
     }
 
     /// Passe au volet voisin ; `false` s'il n'y en a pas (la touche va alors au programme).

@@ -30,6 +30,11 @@ impl Paths {
     pub fn state_file(&self) -> PathBuf {
         self.data_dir.join("state.json")
     }
+
+    /// Jeton GitHub saisi dans les Paramètres (droits 600).
+    pub fn github_token_file(&self) -> PathBuf {
+        self.data_dir.join("github-token")
+    }
 }
 
 fn env_dir(var: &str) -> Option<PathBuf> {

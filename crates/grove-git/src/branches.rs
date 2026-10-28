@@ -147,6 +147,26 @@ pub fn sync(workdir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Remotes du dépôt : `(nom, url)`.
+pub fn remotes(workdir: &Path) -> Result<Vec<(String, String)>> {
+    // Sans remote, `git config` sort en erreur sans rien écrire.
+    let out = git(workdir, &["config", "--get-regexp", r"^remote\..*\.url$"]).unwrap_or_default();
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let (key, url) = line.split_once(' ')?;
+            let name = key.strip_prefix("remote.")?.strip_suffix(".url")?;
+            Some((name.to_owned(), url.trim().to_owned()))
+        })
+        .collect())
+}
+
+/// Récupère `refspec` depuis `remote` (`+refs/pull/12/head:refs/heads/pr-12`…).
+pub fn fetch(workdir: &Path, remote: &str, refspec: &str) -> Result<()> {
+    git(workdir, &["fetch", remote, refspec])?;
+    Ok(())
+}
+
 /// Passe sur `branch`. Une branche distante (`origin/x`) crée la branche locale `x` qui la suit.
 pub fn switch(workdir: &Path, branch: &Branch) -> Result<()> {
     if branch.remote {
@@ -243,6 +263,8 @@ mod tests {
         let status = checkout_status(clone.path()).unwrap();
         assert_eq!((status.ahead, status.behind, status.has_upstream), (1, 0, true));
 
+        assert_eq!(remotes(clone.path()).unwrap(), [("origin".to_owned(), path.to_str().unwrap().to_owned())]);
+        assert_eq!(remotes(path).unwrap(), []);
         let branches = list_branches(clone.path()).unwrap();
         assert!(branches.iter().any(|b| b.remote && b.name == "origin/main"));
         assert!(!branches.iter().any(|b| b.name.ends_with("/HEAD")));

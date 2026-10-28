@@ -4,7 +4,8 @@ mod branches;
 mod worktrees;
 
 pub use branches::{
-    Branch, CheckoutStatus, checkout_status, create, default_branch, delete, list_branches, switch, sync,
+    Branch, CheckoutStatus, checkout_status, create, default_branch, delete, fetch, list_branches, remotes, switch,
+    sync,
 };
 pub use worktrees::{
     NewWorktree, Worktree, add_worktree, exclude, list_worktrees, remove_worktree, stash_pop, stash_push,

@@ -24,14 +24,16 @@ pub(crate) enum Section {
     Terminal,
     Profiles,
     Claude,
+    GitHub,
     Shortcuts,
 }
 
-const SECTIONS: [(Section, &str, Icon); 5] = [
+const SECTIONS: [(Section, &str, Icon); 6] = [
     (Section::General, "Général", Icon::Settings),
     (Section::Terminal, "Terminal", Icon::Terminal),
     (Section::Profiles, "Profils", Icon::Server),
     (Section::Claude, "Claude", Icon::Claude),
+    (Section::GitHub, "GitHub", Icon::GitPullRequest),
     (Section::Shortcuts, "Raccourcis clavier", Icon::Keyboard),
 ];
 
@@ -43,6 +45,9 @@ pub(crate) enum FieldId {
     Shell,
     Scrollback,
     ClaudeCommand,
+    GitHubToken,
+    ReviewPrompt,
+    AddressPrompt,
     Profile(ProfileField),
 }
 
@@ -236,6 +241,10 @@ impl GroveView {
             FieldId::Shell => config.terminal.shell.clone().unwrap_or_default(),
             FieldId::Scrollback => config.terminal.scrollback.to_string(),
             FieldId::ClaudeCommand => config.claude.command.clone(),
+            // Jamais réaffiché : la saisie part d'un champ vide.
+            FieldId::GitHubToken => String::new(),
+            FieldId::ReviewPrompt => config.github.review.prompt.clone(),
+            FieldId::AddressPrompt => config.github.address.prompt.clone(),
             FieldId::Profile(field) => {
                 self.settings.as_ref().and_then(|s| s.editor.as_ref()).map(|e| field.get(&e.draft)).unwrap_or_default()
             }
@@ -307,6 +316,23 @@ impl GroveView {
                 }
                 Ok(())
             }),
+            FieldId::GitHubToken => self.set_github_token(Some(&text), cx).map(|()| {
+                if let Some(settings) = &mut self.settings {
+                    settings.message = Some(Message::Info("Jeton GitHub enregistré.".into()));
+                }
+            }),
+            FieldId::ReviewPrompt | FieldId::AddressPrompt => {
+                let table = if id == FieldId::ReviewPrompt { "review" } else { "address" };
+                self.write_config(cx, |file| {
+                    // Ancien nom de la clé : il masquerait la nouvelle valeur.
+                    file.remove(&["github", table, "skill"]);
+                    match opt(&text) {
+                        Some(prompt) => file.set(&["github", table, "prompt"], prompt),
+                        None => file.remove(&["github", table, "prompt"]),
+                    }
+                    Ok(())
+                })
+            }
         };
         if let (Err(err), Some(settings)) = (result, &mut self.settings) {
             settings.message = Some(Message::Error(format!("{err:#}")));
@@ -661,6 +687,7 @@ impl GroveView {
             Section::Terminal => self.render_terminal_settings(cx),
             Section::Profiles => self.render_profiles_settings(cx),
             Section::Claude => self.render_claude_settings(cx),
+            Section::GitHub => self.render_github_settings(cx),
             Section::Shortcuts => self.render_shortcuts(cx),
         };
         let message = settings.message.as_ref().map(|message| {
@@ -926,6 +953,81 @@ impl GroveView {
                     let value = !this.config.claude.usage_api;
                     this.write_setting(cx, |file| { file.set(&["claude", "usage_api"], value); Ok(()) });
                 })),
+            ))
+            .into_any_element()
+    }
+
+    fn render_github_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let github = &self.github;
+        let manual = github.token.as_ref().filter(|t| t.source == grove_github::TokenSource::Manual).map(|t| t.value.clone());
+        let (status, color) = match (&github.error, &github.inbox, &github.token) {
+            (Some(error), _, _) => (error.clone(), theme::danger()),
+            (None, Some(inbox), Some(token)) => {
+                let source = match token.source {
+                    grove_github::TokenSource::GhCli => "CLI GitHub".to_owned(),
+                    grove_github::TokenSource::Manual => format!("jeton saisi ({})", grove_github::mask(&token.value)),
+                };
+                (format!("@{} · {source}", inbox.viewer), theme::text())
+            }
+            _ if github.loading || !github.resolved => ("Lecture…".into(), theme::text_muted()),
+            _ => ("Aucun jeton : ni saisi, ni CLI GitHub connectée.".into(), theme::waiting()),
+        };
+        let token_control = match manual {
+            Some(token) => div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().text_sm().text_color(theme::text_muted()).child(grove_github::mask(&token)))
+                .child(button("github-token-remove", "Supprimer", ButtonStyle::Secondary).on_click(cx.listener(|this, _, _, cx| {
+                    let result = this.set_github_token(None, cx);
+                    if let Some(settings) = &mut this.settings {
+                        settings.message = Some(match result {
+                            Ok(()) => Message::Info("Jeton supprimé : celui de la CLI GitHub sera utilisé s'il existe.".into()),
+                            Err(err) => Message::Error(format!("{err:#}")),
+                        });
+                    }
+                    cx.notify();
+                })))
+                .into_any_element(),
+            None => self.render_field(FieldId::GitHubToken, "ghp_… ou github_pat_…", px(260.0), cx),
+        };
+        div()
+            .child(section_title("GitHub"))
+            .child(setting_row(
+                "Connexion",
+                "Compte utilisé pour lire les pull requests, toutes les 2 min.",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().max_w(px(300.0)).text_sm().text_color(color).child(status))
+                    .child(
+                        icon_button("github-refresh", Icon::Refresh)
+                            .tooltip(tooltip("Actualiser"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.github.token = None;
+                                this.refresh_github(cx);
+                            })),
+                    ),
+            ))
+            .child(setting_row(
+                "Jeton d'accès",
+                "Par défaut, celui de la CLI GitHub (gh auth login). Un jeton saisi ici le remplace : \
+                 classique avec le scope repo, ou fine-grained avec la lecture des pull requests. \
+                 Gardé dans le dossier de données de Grove, lisible par toi seul.",
+                token_control,
+            ))
+            .child(setting_row(
+                "Review",
+                "Envoyé par « Reviewer ». Un skill (/morty:review) reçoit l'URL de la PR en argument ; \
+                 un prompt libre est suivi de l'URL. Par projet : [github.review] prompt dans .grove.toml.",
+                self.render_field(FieldId::ReviewPrompt, "/morty:review", px(320.0), cx),
+            ))
+            .child(setting_row(
+                "Commentaires reçus",
+                "Envoyé par « Prendre en compte les commentaires », suivi de l'URL et des fils qui \
+                 attendent ta réponse. Skill ou prompt libre, comme pour la review.",
+                self.render_field(FieldId::AddressPrompt, "Analyse les commentaires de cette PR…", px(320.0), cx),
             ))
             .into_any_element()
     }

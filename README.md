@@ -9,6 +9,8 @@ Claude suivis par les hooks, usage du compte ; worktrees (création, promotion,
 suppression, import). Phase 4 commencée : vue native des sessions Claude
 (stream-json, permissions, bascule avec le terminal). Phase 5 : profils de
 terminal (shell, SSH, commande), page Paramètres et liste des raccourcis.
+Phase 6 commencée : pull requests ouvertes (à reviewer, les miennes), reviews et
+commentaires confiés à Claude.
 
 | Crate | Rôle |
 |---|---|
@@ -16,6 +18,7 @@ terminal (shell, SSH, commande), page Paramètres et liste des raccourcis.
 | `grove-term` | PTY + émulation `alacritty_terminal`, couleurs résolues, sans dépendance à l'UI |
 | `grove-claude` | Hooks et statusline de Claude Code (socket Unix), état des sessions, transcripts |
 | `grove-git` | Détection du dépôt et lecture de `HEAD` (`gix`), surveillance de `HEAD` (`notify`) |
+| `grove-github` | Jeton (saisi ou `gh auth token`), pull requests ouvertes via l'API GraphQL |
 | `grove-app` | Binaire `grove` (GPUI) |
 
 ## Compiler
@@ -62,6 +65,7 @@ garde l'ancien binaire jusqu'à sa fermeture.
 | `Ctrl+Shift+G` | Sélecteur de branches (chercher, changer, créer depuis la branche courante ou la branche principale, supprimer, déplacer le travail dans un worktree) |
 | `Ctrl+Shift+N` | Nouvel espace de travail (worktree) ; `Maj+Entrée` l'ouvre avec Claude |
 | `Ctrl+Shift+M` | Onglet Claude : basculer entre le terminal (TUI officiel) et la vue native |
+| `Ctrl+Shift+P` | Pull requests GitHub (`Échap` ferme) |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copier la sélection / coller |
 | `Shift+PageUp/PageDown` | Défiler dans le scrollback |
 | `Ctrl+,` | Paramètres (`Échap` les ferme) |
@@ -119,6 +123,7 @@ branche locale et la distante ont divergé, rien n'est fait et un message le dit
   main s'applique sans redémarrer (police des terminaux ouverts comprise ; shell,
   scrollback et commandes valent pour les prochains onglets).
 - `~/.local/share/grove/state.json` : état restauré au démarrage (phase 1)
+- `~/.local/share/grove/github-token` : jeton GitHub saisi dans les Paramètres (droits 600)
 
 `GROVE_CONFIG_DIR` et `GROVE_DATA_DIR` remplacent ces dossiers.
 
@@ -204,6 +209,52 @@ stream-json`, lancé par le shell interactif comme en mode terminal :
   Si Grove ne répond pas, la demande est refusée.
 
 `RUST_LOG=grove=debug` affiche les événements reçus.
+
+## Pull requests GitHub
+
+`Ctrl+Shift+P` (ou l'icône PR en pied de sidebar, avec le nombre de reviews
+demandées) : les PR ouvertes qui me concernent, du projet actif ou de tous.
+
+- **À reviewer** : review demandée (à moi ou à une de mes équipes) ou déjà
+  donnée ; badge « à reviewer », « nouveaux commits » ou « nouvelles réponses »
+  (depuis ma review), « changements demandés, en attente de l'auteur »,
+  « review envoyée ».
+- **Mes pull requests** : badge « n commentaires à traiter » (fils non résolus
+  où le reviewer a parlé en dernier, sans commit poussé depuis), « changements
+  demandés » (sans commit poussé depuis), « traitée, en attente du reviewer »
+  (j'ai répondu ou poussé), « approuvée », « brouillon ». Le bouton n'apparaît
+  que s'il reste quelque chose à traiter.
+- Pastille de CI (réussie, en échec, en cours) ; clic sur une ligne : la PR
+  dans le navigateur. Dans la sidebar, l'espace de travail sur la branche
+  d'une PR affiche son numéro et sa CI.
+- **Reviewer** / **Actualiser la review** et **Prendre en compte les
+  commentaires** ouvrent un onglet Claude dans l'espace de la branche, ou dans
+  un worktree créé pour l'occasion (branche récupérée sur le remote ;
+  `refs/pull/<n>/head` dans `pr-<n>` pour un fork). Le skill ou le prompt
+  reçoit l'URL de la PR, et les fils qui attendent ma réponse (fichier, ligne,
+  auteur, texte) pour les commentaires.
+- Lecture toutes les 2 min (une requête GraphQL), sans notification.
+
+Jeton : celui de la CLI GitHub (`gh auth token`, cherché aussi via le shell
+interactif), ou un jeton saisi dans Paramètres › GitHub, qui le remplace.
+Le projet d'une PR est celui dont un remote pointe sur son dépôt.
+
+Les deux actions envoient un skill ou un prompt libre (Paramètres › GitHub) :
+un texte qui commence par `/` est un skill, lancé avec l'URL de la PR en
+argument ; sinon, l'URL suit le prompt. Les fils qui attendent ma réponse sont
+ajoutés pour les commentaires.
+
+```toml
+[github.review]
+prompt = "/morty:review"
+refresh_prompt = "L'auteur a répondu ou poussé de nouveaux commits, mets la review à jour."
+
+[github.address]
+prompt = "Analyse les commentaires de review de cette PR et applique les corrections pertinentes. Propose ensuite dans le chat une réponse concise en anglais pour chaque fil. Ne poste rien sur GitHub avant mon accord : quand je dis go, poste les réponses."
+```
+
+`.grove.toml` peut les changer pour un projet (`[github.review] prompt`,
+`[github.address] prompt`).
 
 ## Notes
 

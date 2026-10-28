@@ -86,7 +86,7 @@ pub(crate) struct Notice {
 }
 
 /// Résultat d'une création, appliqué ensuite à l'état de l'UI.
-struct Created {
+pub(crate) struct Created {
     path: PathBuf,
     branch: String,
     base: String,
@@ -243,7 +243,7 @@ impl GroveView {
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(created) => {
                     this.worktree_dialog = None;
-                    this.add_created_worktree(project, created, with_claude, window, cx);
+                    this.add_created_worktree(project, created, with_claude, None, window, cx);
                 }
                 Err(err) => {
                     if let Some(dialog) = &mut this.worktree_dialog {
@@ -257,11 +257,13 @@ impl GroveView {
         cx.notify();
     }
 
-    fn add_created_worktree(
+    /// Ajoute le worktree créé et l'active. `prompt` : premier message de la session Claude.
+    pub(crate) fn add_created_worktree(
         &mut self,
         project: ProjectId,
         created: Created,
         with_claude: bool,
+        prompt: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -275,7 +277,10 @@ impl GroveView {
             self.pending_commands.insert(tab, setup_script(&created.setup));
         }
         if with_claude {
-            workspace.add_claude_tab(None, self.config.claude.view);
+            let tab = workspace.add_claude_tab(None, self.config.claude.view);
+            if let Some(prompt) = prompt {
+                self.pending_prompts.insert(tab, prompt);
+            }
         }
         self.watch_git(id, &created.path, cx);
         self.activate_workspace((project, id), window, cx);
@@ -657,7 +662,7 @@ impl GroveView {
 }
 
 /// Crée le worktree (hors du thread de l'UI) : dossier, exclusion, promotion, copie des fichiers.
-fn prepare_worktree(root: &Path, target: &NewWorktree, mode: DialogMode) -> anyhow::Result<Created> {
+pub(crate) fn prepare_worktree(root: &Path, target: &NewWorktree, mode: DialogMode) -> anyhow::Result<Created> {
     let config = ProjectConfig::load(root)?.worktree;
     let branch = target.branch().to_owned();
     let path = config.path_for(root, &branch);

@@ -126,6 +126,10 @@ impl GroveView {
         if let Some(id) = session_id {
             command.push_str(&format!(" --resume {}", shell_quote(id)));
         }
+        // Premier message de la session (review d'une PR…).
+        if let Some(prompt) = self.pending_prompts.remove(&tab) {
+            command.push_str(&format!(" {}", shell_quote(&prompt)));
+        }
 
         let mut options = self.terminal_options(cwd);
         options.args = vec!["-i".into(), "-c".into(), command];
@@ -306,6 +310,7 @@ impl GroveView {
             }
             workspace.add_claude_tab(session_id, self.config.claude.view);
             self.claude.history = None;
+            self.github.panel = None;
             self.save();
             self.focus_active(window, cx);
             cx.notify();
@@ -313,6 +318,7 @@ impl GroveView {
     }
 
     pub(crate) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.github.panel = None;
         if self.claude.history.take().is_some() {
             self.focus_active(window, cx);
         } else if let Some(workspace) = self.state.active_workspace.and_then(|key| self.state.workspace(key)) {
@@ -667,7 +673,7 @@ pub(crate) fn status_badge(status: &ClaudeStatus) -> (&'static str, Hsla, String
     }
 }
 
-fn relative_time(time: std::time::SystemTime) -> String {
+pub(crate) fn relative_time(time: std::time::SystemTime) -> String {
     let Ok(elapsed) = time.elapsed() else { return "à l'instant".into() };
     match elapsed.as_secs() {
         s if s < 60 => "à l'instant".into(),

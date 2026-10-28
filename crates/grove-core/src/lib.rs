@@ -10,7 +10,7 @@ pub mod profile;
 pub mod project_config;
 pub mod state;
 
-pub use config::{ClaudeConfig, Config, FontConfig, TerminalConfig};
+pub use config::{AddressConfig, ClaudeConfig, Config, FontConfig, GitHubConfig, ReviewConfig, TerminalConfig};
 pub use config_file::ConfigFile;
 pub use ids::{ProjectId, TabId, WorkspaceId};
 pub use layout::{Axis, ClosedPane, Direction, Layout, Pane};

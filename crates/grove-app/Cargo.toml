@@ -18,6 +18,7 @@ grove-term.workspace = true
 log.workspace = true
 grove-git.workspace = true
 grove-claude.workspace = true
+grove-github.workspace = true
 notify.workspace = true
 notify-rust.workspace = true
 jiff = "0.2"

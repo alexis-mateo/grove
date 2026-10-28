@@ -146,6 +146,21 @@ impl GroveView {
                                 }
                             })),
                     )
+                    .child({
+                        let requested = self.github.inbox.as_ref().map_or(0, |inbox| {
+                            inbox.to_review.iter().filter(|p| p.review_state() == grove_github::ReviewState::Requested).count()
+                        });
+                        icon_button("open-pull-requests", Icon::GitPullRequest)
+                            .when(self.github.panel.is_some(), |b| b.bg(theme::selected()))
+                            .when(requested > 0, |b| b.w_auto().px_1p5().gap_1().child(
+                                div().text_xs().text_color(theme::waiting()).child(requested.to_string()),
+                            ))
+                            .tooltip(tooltip(match requested {
+                                0 => "Pull requests · Ctrl+Shift+P".to_owned(),
+                                n => format!("Pull requests · {n} review(s) demandée(s) · Ctrl+Shift+P"),
+                            }))
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_pull_requests(window, cx)))
+                    })
                     .child(
                         icon_button("open-shortcuts", Icon::Keyboard)
                             .tooltip(tooltip("Raccourcis clavier"))
@@ -360,6 +375,27 @@ impl GroveView {
             .tooltip(tooltip(format!("{hint} · {}", workspace.path.display())))
             .child(icon(glyph, if active { theme::text() } else { theme::text_faint() }));
 
+        // PR ouverte de la branche, avec l'état de sa CI.
+        let pull = match head {
+            Some(grove_git::Head::Branch(branch)) => self.workspace_pull(project.id, branch),
+            _ => None,
+        };
+        let pull = pull.map(|pr| {
+            let (color, ci) = pr.checks.map_or((theme::text_faint(), "pas de CI"), crate::github::checks_look);
+            let ci = if pr.checks.is_some() { format!("CI {ci}") } else { ci.to_owned() };
+            div()
+                .id(SharedString::from(format!("workspace-pull-{}", workspace.id)))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_xs()
+                .text_color(theme::text_faint())
+                .tooltip(tooltip(format!("PR #{} · {} · {ci}", pr.number, pr.title)))
+                .child(dot(color))
+                .child(format!("#{}", pr.number))
+        });
+
         let group: SharedString = format!("workspace-row-{}", workspace.id).into();
         div()
             .id(SharedString::from(format!("workspace-{}", workspace.id)))
@@ -377,6 +413,7 @@ impl GroveView {
             .on_click(cx.listener(move |this, _, window, cx| this.activate_workspace(key, window, cx)))
             .child(leading)
             .child(marquee(SharedString::from(format!("workspace-label-{}", workspace.id)), label))
+            .children(pull)
             .child(meta.flex_none().text_xs())
             .when(is_worktree, |d| {
                 d.child(

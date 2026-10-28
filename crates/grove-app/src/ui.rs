@@ -60,6 +60,7 @@ icons! {
     Folder => "folder",
     FolderPlus => "folder-plus",
     GitBranch => "git-branch",
+    GitPullRequest => "git-pull-request",
     History => "history",
     House => "house",
     Keyboard => "keyboard",

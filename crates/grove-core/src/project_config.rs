@@ -12,6 +12,22 @@ pub const FILE_NAME: &str = ".grove.toml";
 pub struct ProjectConfig {
     pub worktree: WorktreeConfig,
     pub terminal: ProjectTerminalConfig,
+    pub github: ProjectGitHubConfig,
+}
+
+/// Skills ou prompts propres au projet, à la place de ceux de `config.toml` (specs §12.1).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectGitHubConfig {
+    pub review: ProjectSkill,
+    pub address: ProjectSkill,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectSkill {
+    #[serde(alias = "skill")]
+    pub prompt: Option<String>,
 }
 
 /// Profils de terminal propres au projet, partagés avec l'équipe (specs §11.1).

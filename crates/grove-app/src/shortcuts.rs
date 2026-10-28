@@ -62,6 +62,7 @@ fn describe(action: &str) -> Option<(Group, &'static str)> {
         "grove::ToggleSessionPanel" => (Group::Claude, "Panneau de session"),
         "grove::ShowHistory" => (Group::Claude, "Sessions passées de l'espace"),
         "grove::ToggleClaudeView" => (Group::Claude, "Basculer entre le terminal et la vue native"),
+        "grove::ShowPullRequests" => (Group::Workspaces, "Pull requests GitHub"),
         "grove::ToggleSidebar" => (Group::Sidebar, "Afficher / masquer la sidebar"),
         "grove::OpenSettings" => (Group::Grove, "Paramètres"),
         "terminal::Copy" => (Group::Terminal, "Copier la sélection"),

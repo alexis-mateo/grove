@@ -2,6 +2,7 @@ mod branches;
 mod builtin_glyphs;
 mod claude;
 mod fonts;
+mod github;
 mod grove_view;
 mod images;
 mod keys;

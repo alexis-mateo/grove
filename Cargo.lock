@@ -3222,6 +3222,7 @@ dependencies = [
  "grove-claude",
  "grove-core",
  "grove-git",
+ "grove-github",
  "grove-term",
  "image",
  "jiff",
@@ -3271,6 +3272,18 @@ dependencies = [
  "log",
  "notify",
  "tempfile",
+]
+
+[[package]]
+name = "grove-github"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "log",
+ "serde_json",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ use grove_git::{CheckoutStatus, Head, HeadWatcher};
 use crate::branches::BranchPicker;
 use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
+use crate::github::GitHub;
 use crate::native_view::{NativeView, NativeViewEvent};
 use crate::profiles::{Offline, ProfileCatalog, ProfilePicker};
 use crate::settings::{ConfigWatch, Settings};
@@ -46,6 +47,7 @@ actions!(
         NewWorkspace,
         ToggleClaudeView,
         OpenSettings,
+        ShowPullRequests,
         SplitRight,
         SplitDown,
         FocusPaneLeft,
@@ -82,6 +84,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("shift-pagedown", crate::terminal_view::ScrollPageDown, Some("Terminal")),
         // Ctrl+, n'envoie rien d'utile aux programmes du terminal (specs §11.3).
         KeyBinding::new("ctrl-,", OpenSettings, None),
+        KeyBinding::new("ctrl-shift-p", ShowPullRequests, None),
         // D : à droite, S : en dessous.
         KeyBinding::new("ctrl-shift-d", SplitRight, None),
         KeyBinding::new("ctrl-shift-s", SplitDown, None),
@@ -151,6 +154,9 @@ pub struct GroveView {
     pub(crate) notice: Option<Notice>,
     /// Commande à lancer à la place du shell interactif (onglet « setup » d'un worktree).
     pub(crate) pending_commands: HashMap<TabId, String>,
+    /// Premier message d'une session Claude pas encore lancée (review d'une PR…).
+    pub(crate) pending_prompts: HashMap<TabId, String>,
+    pub(crate) github: GitHub,
     /// Espace dont le prochain changement de branche vient de Grove (pas d'avertissement).
     pub(crate) expected_head_change: Option<WorkspaceId>,
     focus_handle: FocusHandle,
@@ -221,6 +227,8 @@ impl GroveView {
             remove_dialog: None,
             notice: None,
             pending_commands: HashMap::new(),
+            pending_prompts: HashMap::new(),
+            github: GitHub::default(),
             expected_head_change: None,
             paths,
             config,
@@ -255,6 +263,7 @@ impl GroveView {
         this.profiles.reload_ssh();
         this.mark_restored_ssh_tabs();
         this.watch_config(cx);
+        this.start_github(cx);
 
         match open {
             Some(path) => this.open_project(&path, window, cx),
@@ -354,6 +363,7 @@ impl GroveView {
             self.profiles.reload_project(id, &path);
             self.watch_git(workspace.1, &path, cx);
             self.import_worktrees(id, cx);
+            self.refresh_github(cx);
         }
         self.activate_workspace(workspace, window, cx);
     }
@@ -397,6 +407,7 @@ impl GroveView {
         self.state.active_workspace = Some(key);
         self.rename = None;
         self.claude.history = None;
+        self.github.panel = None;
         self.branch_picker = None;
         self.profile_picker = None;
         self.worktree_dialog = None;
@@ -412,6 +423,7 @@ impl GroveView {
         };
         workspace.active_tab = Some(tab);
         self.state.active_workspace = Some(key);
+        self.github.panel = None;
         self.leave_settings(cx);
         self.save();
         self.focus_active(window, cx);
@@ -604,6 +616,9 @@ impl GroveView {
         let options = self.native_options(tab, cwd, session_id.as_deref());
         let font = crate::fonts::resolve_family(&self.config.font.family);
         let native = cx.new(|cx| NativeView::new(options, font, cx));
+        if let Some(prompt) = self.pending_prompts.remove(&tab) {
+            native.update(cx, |native, cx| native.submit(&prompt, cx));
+        }
         cx.subscribe(&native, move |this, _, event: &NativeViewEvent, cx| {
             match event {
                 NativeViewEvent::SessionId(id) => this.remember_session_id(tab, Some(id.clone())),
@@ -638,6 +653,9 @@ impl GroveView {
         // Les onglets sont cachés par la page Paramètres : elle garde le focus.
         if let Some(settings) = &self.settings {
             return window.focus(&settings.focus);
+        }
+        if let Some(panel) = &self.github.panel {
+            return window.focus(&panel.focus);
         }
         let focus = self.active_view(window, cx).and_then(|_| {
             let tab = self.active_pane()?.2;
@@ -816,8 +834,8 @@ impl Render for GroveView {
                     .min_h_0()
                     .relative()
                     .flex()
-                    .child(match (self.render_history(cx), panes) {
-                        (Some(history), _) => div().size_full().child(history).into_any_element(),
+                    .child(match (self.render_pull_requests(cx).or_else(|| self.render_history(cx)), panes) {
+                        (Some(view), _) => div().size_full().child(view).into_any_element(),
                         (None, Some(panes)) => div()
                             .size_full()
                             .flex()
@@ -864,6 +882,7 @@ impl Render for GroveView {
             .on_action(cx.listener(|this, _: &NewClaudeTab, window, cx| this.new_claude_tab(None, window, cx)))
             .on_action(cx.listener(|this, _: &NextWaiting, window, cx| this.next_waiting(window, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, window, cx| this.toggle_history(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowPullRequests, window, cx| this.toggle_pull_requests(window, cx)))
             .on_action(cx.listener(|this, _: &OpenBranches, window, cx| this.open_branch_picker(window, cx)))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 if let Some((project, _)) = this.state.active_workspace {
