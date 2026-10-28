@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{Context, FocusHandle, KeyDownEvent, SharedString, Task, Window, div, prelude::*, px, uniform_list};
+use grove_claude::ClaudeStatus;
 use grove_core::{ProjectConfig, ProjectId, WorkspaceId, WorkspaceKind, WorktreeConfig, WorktreeLocation};
 use grove_git::{Branch, NewWorktree};
 
@@ -136,40 +137,75 @@ impl WorktreeDialog {
 }
 
 impl GroveView {
-    /// Ajoute à la sidebar les worktrees du dépôt créés hors de Grove (specs §9.4) :
-    /// au démarrage, puis dès que git en crée un (`WorktreesWatcher`).
-    pub(crate) fn import_worktrees(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+    /// Aligne la sidebar sur les worktrees du dépôt (specs §9.4) : ajoute ceux
+    /// créés hors de Grove, retire ceux supprimés hors de Grove (par Claude Code,
+    /// un terminal…). Au démarrage, puis à chaque changement (`WorktreesWatcher`).
+    pub(crate) fn import_worktrees(&mut self, project: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.state.project(project).map(|p| p.root.clone()) else { return };
         if !self.state.project(project).is_some_and(|p| p.workspaces.iter().any(|w| self.git.contains_key(&w.id))) {
             return;
         }
         self.watch_worktrees(project, &root);
         let list = cx.background_executor().spawn(async move { grove_git::list_worktrees(&root) });
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let Ok(worktrees) = list.await else { return };
-            let _ = this.update(cx, |this, cx| {
-                let mut added = Vec::new();
-                if let Some(p) = this.state.projects.iter_mut().find(|p| p.id == project) {
-                    for worktree in worktrees.iter().filter(|w| !w.main && !w.prunable) {
-                        let path = worktree.path.canonicalize().unwrap_or_else(|_| worktree.path.clone());
-                        if p.workspaces.iter().any(|w| w.path == path) || p.ignored_worktrees.contains(&path) {
-                            continue;
-                        }
-                        let branch = worktree.branch.clone().unwrap_or_else(|| "HEAD détachée".into());
-                        added.push((p.add_worktree(path.clone(), &branch, ""), path));
-                    }
-                }
-                if added.is_empty() {
-                    return;
-                }
-                for (id, path) in added {
-                    this.watch_git(id, &path, cx);
-                }
-                this.save();
-                cx.notify();
-            });
+            let _ = this.update_in(cx, |this, window, cx| this.sync_worktrees(project, &worktrees, window, cx));
         })
         .detach();
+    }
+
+    fn sync_worktrees(
+        &mut self,
+        project: ProjectId,
+        worktrees: &[grove_git::Worktree],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let live: Vec<PathBuf> = worktrees
+            .iter()
+            .filter(|w| !w.main && !w.prunable)
+            .map(|w| w.path.canonicalize().unwrap_or_else(|_| w.path.clone()))
+            .collect();
+        let Some(p) = self.state.projects.iter_mut().find(|p| p.id == project) else { return };
+
+        let mut added = Vec::new();
+        for (worktree, path) in worktrees.iter().filter(|w| !w.main && !w.prunable).zip(&live) {
+            if p.workspaces.iter().any(|w| w.path == *path) || p.ignored_worktrees.contains(path) {
+                continue;
+            }
+            let branch = worktree.branch.clone().unwrap_or_else(|| "HEAD détachée".into());
+            added.push((p.add_worktree(path.clone(), &branch, ""), path.clone()));
+        }
+
+        // Disparus de git, ou dossier effacé. Une session Claude en plein travail
+        // dans l'espace le garde jusqu'au prochain changement.
+        let gone: Vec<WorkspaceKey> = p
+            .workspaces
+            .iter()
+            .filter(|w| matches!(w.kind, WorkspaceKind::Worktree { .. }))
+            .filter(|w| !live.contains(&w.path) || !w.path.exists())
+            .filter(|w| {
+                !w.tabs.iter().flat_map(|t| t.pane_ids()).any(|pane| {
+                    matches!(
+                        self.claude.sessions.get(&pane).map(|s| &s.status),
+                        Some(ClaudeStatus::Working { .. } | ClaudeStatus::NeedsInput { .. })
+                    )
+                })
+            })
+            .map(|w| (project, w.id))
+            .collect();
+
+        if added.is_empty() && gone.is_empty() {
+            return;
+        }
+        for (id, path) in added {
+            self.watch_git(id, &path, cx);
+        }
+        for key in gone {
+            self.forget_workspace(key, window, cx);
+        }
+        self.save();
+        cx.notify();
     }
 
     /// Surveille les worktrees du dépôt ; recréé tant que `.git/worktrees` n'existait pas.
@@ -288,7 +324,11 @@ impl GroveView {
     ) {
         let Some(p) = self.state.projects.iter_mut().find(|p| p.id == project) else { return };
         p.ignored_worktrees.retain(|path| *path != created.path);
-        let id = p.add_worktree(created.path.clone(), &created.branch, &created.base);
+        // Déjà importé par la surveillance des worktrees, pendant la copie des fichiers.
+        let id = match p.workspaces.iter().find(|w| w.path == created.path) {
+            Some(existing) => existing.id,
+            None => p.add_worktree(created.path.clone(), &created.branch, &created.base),
+        };
         let workspace = p.workspace_mut(id).expect("worktree ajouté");
         if !created.setup.is_empty() {
             let tab = workspace.add_terminal_tab();
@@ -532,9 +572,8 @@ impl GroveView {
         let Some(project) = self.state.projects.iter_mut().find(|p| p.id == key.0) else { return };
         let Some(workspace) = project.remove_workspace(key.1) else { return };
         let direct = project.workspaces[0].id;
-        for tab in &workspace.tabs {
-            self.terminals.remove(&tab.id);
-            self.claude.sessions.remove(&tab.id);
+        for pane in workspace.tabs.iter().flat_map(|t| t.pane_ids()) {
+            self.drop_pane(pane);
         }
         self.git.remove(&key.1);
         if self.state.active_workspace == Some(key) {

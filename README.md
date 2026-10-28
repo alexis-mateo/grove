@@ -174,6 +174,11 @@ copy = [".env", ".env.local"] # copiés depuis le checkout principal
 setup = ["npm install"]       # lancés dans un onglet « setup » ; {{repo}} = nom du dossier du projet
 ```
 
+Les worktrees créés ou supprimés hors de Grove (Claude Code, `git worktree` dans
+un terminal) apparaissent et disparaissent aussitôt de la sidebar : `.git/worktrees`
+est surveillé. Un espace où une session Claude travaille est gardé jusqu'au
+changement suivant.
+
 ## Claude Code
 
 Un onglet Claude lance `claude --settings ~/.local/share/grove/claude-settings.json`

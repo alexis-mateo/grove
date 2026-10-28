@@ -216,7 +216,7 @@ impl GroveView {
 
         // `git worktree add` écrit en plusieurs fois : on attend un peu, puis on importe.
         let (worktree_events, worktree_rx) = smol::channel::unbounded::<ProjectId>();
-        let worktree_task = cx.spawn(async move |this, cx| {
+        let worktree_task = cx.spawn_in(window, async move |this, cx| {
             while let Ok(first) = worktree_rx.recv().await {
                 gpui::Timer::after(std::time::Duration::from_millis(500)).await;
                 let mut projects = vec![first];
@@ -225,9 +225,9 @@ impl GroveView {
                         projects.push(project);
                     }
                 }
-                let alive = this.update(cx, |this, cx| {
+                let alive = this.update_in(cx, |this, window, cx| {
                     for project in projects {
-                        this.import_worktrees(project, cx);
+                        this.import_worktrees(project, window, cx);
                     }
                 });
                 if alive.is_err() {
@@ -285,7 +285,7 @@ impl GroveView {
         let projects: Vec<_> = this.state.projects.iter().map(|p| (p.id, p.root.clone())).collect();
         for (project, root) in projects {
             this.profiles.reload_project(project, &root);
-            this.import_worktrees(project, cx);
+            this.import_worktrees(project, window, cx);
         }
         this.profiles.reload_ssh();
         this.mark_restored_ssh_tabs();
@@ -389,7 +389,7 @@ impl GroveView {
         if !existed {
             self.profiles.reload_project(id, &path);
             self.watch_git(workspace.1, &path, cx);
-            self.import_worktrees(id, cx);
+            self.import_worktrees(id, window, cx);
             self.refresh_github(cx);
         }
         self.activate_workspace(workspace, window, cx);
