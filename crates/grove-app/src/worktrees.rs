@@ -136,12 +136,14 @@ impl WorktreeDialog {
 }
 
 impl GroveView {
-    /// Ajoute à la sidebar les worktrees du dépôt créés hors de Grove (specs §9.4).
+    /// Ajoute à la sidebar les worktrees du dépôt créés hors de Grove (specs §9.4) :
+    /// au démarrage, puis dès que git en crée un (`WorktreesWatcher`).
     pub(crate) fn import_worktrees(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         let Some(root) = self.state.project(project).map(|p| p.root.clone()) else { return };
         if !self.state.project(project).is_some_and(|p| p.workspaces.iter().any(|w| self.git.contains_key(&w.id))) {
             return;
         }
+        self.watch_worktrees(project, &root);
         let list = cx.background_executor().spawn(async move { grove_git::list_worktrees(&root) });
         cx.spawn(async move |this, cx| {
             let Ok(worktrees) = list.await else { return };
@@ -168,6 +170,23 @@ impl GroveView {
             });
         })
         .detach();
+    }
+
+    /// Surveille les worktrees du dépôt ; recréé tant que `.git/worktrees` n'existait pas.
+    fn watch_worktrees(&mut self, project: ProjectId, root: &Path) {
+        if self.worktree_watchers.get(&project).is_some_and(|w| w.complete()) {
+            return;
+        }
+        let Some(repo) = grove_git::discover(root) else { return };
+        let tx = self.worktree_events.clone();
+        match grove_git::WorktreesWatcher::new(&repo.common_dir, move || {
+            let _ = tx.try_send(project);
+        }) {
+            Ok(watcher) => {
+                self.worktree_watchers.insert(project, watcher);
+            }
+            Err(err) => log::warn!("surveillance des worktrees de {} : {err:#}", root.display()),
+        }
     }
 
     pub(crate) fn open_worktree_dialog(

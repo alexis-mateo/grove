@@ -92,6 +92,39 @@ impl HeadWatcher {
     }
 }
 
+/// Surveille `<common_dir>/worktrees`, que git remplit à chaque `git worktree
+/// add` (de Grove, d'un terminal ou de Claude Code), et appelle `on_change`.
+/// Le dossier n'existe qu'après le premier worktree : on surveille aussi son
+/// parent pour le voir apparaître, puis `complete()` dit de recréer le watcher.
+pub struct WorktreesWatcher {
+    _watcher: RecommendedWatcher,
+    complete: bool,
+}
+
+impl WorktreesWatcher {
+    pub fn new(common_dir: &Path, on_change: impl Fn() + Send + 'static) -> Result<Self> {
+        let worktrees = common_dir.join("worktrees");
+        let filter = worktrees.clone();
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if let Ok(event) = event
+                && !event.kind.is_access()
+                && event.paths.iter().any(|p| p.starts_with(&filter))
+            {
+                on_change();
+            }
+        })?;
+        watcher.watch(common_dir, RecursiveMode::NonRecursive)?;
+        // Récursif : le checkout écrit l'index du worktree jusqu'à la fin.
+        let complete = worktrees.is_dir() && watcher.watch(&worktrees, RecursiveMode::Recursive).is_ok();
+        Ok(Self { _watcher: watcher, complete })
+    }
+
+    /// Le dossier `worktrees` est surveillé (sinon, il n'existait pas encore).
+    pub fn complete(&self) -> bool {
+        self.complete
+    }
+}
+
 /// `HEAD` créée, écrite ou renommée. Les accès (ouverture, fermeture) sont
 /// ignorés : `read_head` ouvre `HEAD`, ce qui relancerait la lecture sans fin.
 fn head_changed(event: &notify::Event) -> bool {
@@ -162,5 +195,38 @@ mod tests {
         git(dir.path(), &["switch", "-q", "-c", "feat-1"]);
         let head = rx.recv_timeout(Duration::from_secs(5)).expect("pas de notification");
         assert_eq!(head, Head::Branch("feat-1".into()));
+    }
+
+    #[test]
+    fn worktrees_watcher_sees_new_worktrees() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let repo = discover(dir.path()).unwrap();
+        let wait = |rx: &mpsc::Receiver<()>| {
+            rx.recv_timeout(Duration::from_secs(5)).expect("pas de notification");
+            while rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+        };
+
+        // Premier worktree : le dossier `worktrees` n'existe pas encore.
+        let (tx, rx) = mpsc::channel();
+        let watcher = WorktreesWatcher::new(&repo.common_dir, move || {
+            let _ = tx.send(());
+        })
+        .unwrap();
+        assert!(!watcher.complete());
+        let wt = tempfile::tempdir().unwrap();
+        git(dir.path(), &["worktree", "add", "-q", wt.path().join("a").to_str().unwrap(), "-b", "a"]);
+        wait(&rx);
+
+        // Recréé, il voit les suivants.
+        let (tx, rx) = mpsc::channel();
+        let watcher = WorktreesWatcher::new(&repo.common_dir, move || {
+            let _ = tx.send(());
+        })
+        .unwrap();
+        assert!(watcher.complete());
+        git(dir.path(), &["worktree", "add", "-q", wt.path().join("b").to_str().unwrap(), "-b", "b"]);
+        wait(&rx);
     }
 }

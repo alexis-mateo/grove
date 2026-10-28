@@ -12,7 +12,7 @@ use gpui::{
 use grove_claude::ClaudeStatus;
 use grove_core::{ClaudeView, Config, Paths, ProjectId, State, TabId, TabKind, WorkspaceId, WorkspaceKind};
 use grove_term::TerminalOptions;
-use grove_git::{CheckoutStatus, Head, HeadWatcher};
+use grove_git::{CheckoutStatus, Head, HeadWatcher, WorktreesWatcher};
 
 use crate::branches::BranchPicker;
 use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
@@ -159,9 +159,12 @@ pub struct GroveView {
     pub(crate) github: GitHub,
     /// Espace dont le prochain changement de branche vient de Grove (pas d'avertissement).
     pub(crate) expected_head_change: Option<WorkspaceId>,
+    /// Worktrees de chaque projet, pour importer ceux créés hors de Grove.
+    pub(crate) worktree_watchers: HashMap<ProjectId, WorktreesWatcher>,
+    pub(crate) worktree_events: smol::channel::Sender<ProjectId>,
     focus_handle: FocusHandle,
     git_events: smol::channel::Sender<(WorkspaceId, Head)>,
-    _git_tasks: [Task<()>; 2],
+    _git_tasks: [Task<()>; 3],
 }
 
 impl GroveView {
@@ -211,6 +214,28 @@ impl GroveView {
             }
         });
 
+        // `git worktree add` écrit en plusieurs fois : on attend un peu, puis on importe.
+        let (worktree_events, worktree_rx) = smol::channel::unbounded::<ProjectId>();
+        let worktree_task = cx.spawn(async move |this, cx| {
+            while let Ok(first) = worktree_rx.recv().await {
+                gpui::Timer::after(std::time::Duration::from_millis(500)).await;
+                let mut projects = vec![first];
+                while let Ok(project) = worktree_rx.try_recv() {
+                    if !projects.contains(&project) {
+                        projects.push(project);
+                    }
+                }
+                let alive = this.update(cx, |this, cx| {
+                    for project in projects {
+                        this.import_worktrees(project, cx);
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
+
         let claude = ClaudeRuntime::start(&paths, config.claude.usage_api, window, cx);
         let sidebar_width = state.sidebar_width.map(px).unwrap_or(DEFAULT_SIDEBAR_WIDTH);
         let mut this = Self {
@@ -241,9 +266,11 @@ impl GroveView {
             sidebar_save: None,
             popover_dismissed: false,
             rename: None,
+            worktree_watchers: HashMap::new(),
+            worktree_events,
             focus_handle: cx.focus_handle(),
             git_events,
-            _git_tasks: [git_task, git_poll],
+            _git_tasks: [git_task, git_poll, worktree_task],
         };
 
         let workspaces: Vec<_> = this
@@ -372,6 +399,7 @@ impl GroveView {
         let Some(project) = self.state.remove_project(id) else {
             return;
         };
+        self.worktree_watchers.remove(&id);
         for workspace in &project.workspaces {
             self.git.remove(&workspace.id);
             for pane in workspace.tabs.iter().flat_map(|t| t.pane_ids()) {
