@@ -20,6 +20,7 @@ use crate::worktrees::DialogMode;
 
 /// Entre deux lectures : trois recherches GraphQL, quelques points sur 5 000 par heure.
 const POLL_INTERVAL: Duration = Duration::from_secs(120);
+const FORK_NOTICE: &str = "PR venue d'un fork : code d'un tiers. Ni setup ni copie de fichiers ; Claude s'ouvre dans le terminal pour que Claude Code demande si le dossier est sûr.";
 /// À l'ouverture du panneau, des données plus vieilles que ça sont relues.
 const STALE_AFTER: Duration = Duration::from_secs(30);
 
@@ -230,7 +231,7 @@ impl GroveView {
         let branch = pr.local_branch();
         if let Some(key) = self.workspace_on_branch(project, &branch) {
             self.github.panel = None;
-            return self.open_claude_with_prompt(key, prompt, window, cx);
+            return self.open_claude_with_prompt(key, prompt, pr.cross_repository, window, cx);
         }
 
         self.github.opening = Some(pr.url.clone());
@@ -242,7 +243,11 @@ impl GroveView {
                 match result {
                     Ok(created) => {
                         this.github.panel = None;
+                        let untrusted = created.untrusted;
                         this.add_created_worktree(project, created, true, Some(prompt), window, cx);
+                        if untrusted && let Some((_, workspace)) = this.state.active_workspace {
+                            this.notice = Some(crate::worktrees::Notice { workspace, text: FORK_NOTICE.into(), suggest_worktree: false });
+                        }
                     }
                     Err(err) => this.github.action_error = Some(format!("Préparation de la branche « {branch} » : {err:#}")),
                 }
@@ -252,9 +257,10 @@ impl GroveView {
         cx.notify();
     }
 
-    /// Nouvel onglet Claude dans `key`, qui reçoit `prompt` au démarrage.
-    fn open_claude_with_prompt(&mut self, key: WorkspaceKey, prompt: String, window: &mut Window, cx: &mut Context<Self>) {
-        let view = self.config.claude.view;
+    /// Nouvel onglet Claude dans `key`, qui reçoit `prompt` au démarrage. Code
+    /// d'un fork : dans le terminal, où Claude Code demande si le dossier est sûr.
+    fn open_claude_with_prompt(&mut self, key: WorkspaceKey, prompt: String, untrusted: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let view = if untrusted { grove_core::ClaudeView::Terminal } else { self.config.claude.view };
         let Some(workspace) = self.state.workspace_mut(key) else { return };
         let tab = workspace.add_claude_tab(None, view);
         self.pending_prompts.insert(tab, prompt);
@@ -481,7 +487,11 @@ fn prepare_pull_worktree(root: &Path, remote: &str, pr: &PullRequest) -> anyhow:
         let local = grove_git::list_branches(root)?.into_iter().any(|b| !b.remote && b.name == branch);
         if local { NewWorktree::Existing(branch) } else { NewWorktree::Remote(format!("{remote}/{}", pr.head_ref)) }
     };
-    crate::worktrees::prepare_worktree(root, &target, DialogMode::Create)
+    if pr.cross_repository {
+        crate::worktrees::prepare_untrusted_worktree(root, &target)
+    } else {
+        crate::worktrees::prepare_worktree(root, &target, DialogMode::Create)
+    }
 }
 
 /// Un skill (`/review`) reçoit l'URL en argument ; un prompt libre, à la ligne.

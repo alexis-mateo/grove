@@ -92,6 +92,9 @@ pub(crate) struct Created {
     branch: String,
     base: String,
     setup: Vec<String>,
+    /// Code d'un tiers (PR venue d'un fork) : ni setup, ni fichiers copiés,
+    /// et Claude dans le terminal, où Claude Code demande si le dossier est sûr.
+    pub untrusted: bool,
 }
 
 impl WorktreeDialog {
@@ -336,7 +339,8 @@ impl GroveView {
             self.pending_commands.insert(tab, setup_script(&created.setup));
         }
         if with_claude {
-            let tab = workspace.add_claude_tab(None, self.config.claude.view);
+            let view = if created.untrusted { grove_core::ClaudeView::Terminal } else { self.config.claude.view };
+            let tab = workspace.add_claude_tab(None, view);
             if let Some(prompt) = prompt {
                 self.pending_prompts.insert(tab, prompt);
             }
@@ -721,7 +725,22 @@ impl GroveView {
 
 /// Crée le worktree (hors du thread de l'UI) : dossier, exclusion, promotion, copie des fichiers.
 pub(crate) fn prepare_worktree(root: &Path, target: &NewWorktree, mode: DialogMode) -> anyhow::Result<Created> {
-    let config = ProjectConfig::load(root)?.worktree;
+    prepare(root, target, mode, true)
+}
+
+/// Worktree pour du code d'un tiers (PR d'un fork) : les commandes de setup
+/// (`npm install` lance les scripts du paquet) et la copie des fichiers (`.env`)
+/// ne s'appliquent pas.
+pub(crate) fn prepare_untrusted_worktree(root: &Path, target: &NewWorktree) -> anyhow::Result<Created> {
+    prepare(root, target, DialogMode::Create, false)
+}
+
+fn prepare(root: &Path, target: &NewWorktree, mode: DialogMode, trusted: bool) -> anyhow::Result<Created> {
+    let mut config = ProjectConfig::load(root)?.worktree;
+    if !trusted {
+        config.copy.clear();
+        config.setup.clear();
+    }
     let branch = target.branch().to_owned();
     let path = config.path_for(root, &branch);
     if path.exists() {
@@ -762,7 +781,7 @@ pub(crate) fn prepare_worktree(root: &Path, target: &NewWorktree, mode: DialogMo
         _ => String::new(),
     };
     let path = path.canonicalize().unwrap_or(path);
-    Ok(Created { path, branch, base, setup: config.setup_commands(root) })
+    Ok(Created { path, branch, base, setup: config.setup_commands(root), untrusted: !trusted })
 }
 
 /// Script de l'onglet « setup » : les commandes, leur code de sortie, puis un shell.
@@ -809,6 +828,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(created.path.join(".env")).unwrap(), "SECRET=1");
         assert_eq!(created.setup, ["echo app"]);
         let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+        assert!(!created.untrusted);
+        // Code d'un fork : rien n'est copié ni lancé.
+        let fork = prepare_untrusted_worktree(&root, &NewWorktree::NewBranch { name: "pr-7".into(), base: "main".into() }).unwrap();
+        assert!(fork.untrusted && fork.setup.is_empty() && !fork.path.join(".env").exists());
         assert!(exclude.contains("/.worktrees/"));
         // Le dossier du worktree n'apparaît pas comme non suivi dans le checkout principal.
         assert_eq!(grove_git::checkout_status(&root).unwrap().changed, 1); // .env seulement
