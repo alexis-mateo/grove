@@ -27,7 +27,8 @@ fragment pr on PullRequest {
   author { login }
   headRefName isCrossRepository
   reviewDecision
-  latestReviews(first: 30) { nodes { author { login } state submittedAt } }
+  latestReviews(first: 30) { nodes { author { login } state submittedAt body } }
+    comments(last: 30) { nodes { author { login } createdAt } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
   reviewThreads(first: 100) {
     nodes {
@@ -82,10 +83,11 @@ pub enum AuthorState {
     Open,
 }
 
-/// Fil de review non résolu.
+/// Fil de review non résolu, ou commentaire général d'une review.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Thread {
-    pub path: String,
+    /// `None` : commentaire général d'une review, sur aucun fichier.
+    pub path: Option<String>,
     pub line: Option<u32>,
     /// Auteur et texte du premier commentaire.
     pub author: String,
@@ -125,6 +127,9 @@ pub struct PullRequest {
     pub changes_requested_at: Option<i64>,
     /// Fils non résolus.
     pub threads: Vec<Thread>,
+    /// Commentaires généraux de la dernière review de chaque reviewer (hors
+    /// approbations) ; j'y ai répondu si j'ai commenté la PR depuis.
+    pub review_comments: Vec<Thread>,
 }
 
 impl PullRequest {
@@ -152,7 +157,7 @@ impl PullRequest {
     /// Fils qui attendent ma réponse : le reviewer a parlé en dernier et je
     /// n'ai rien poussé depuis.
     pub fn threads_to_address(&self) -> impl Iterator<Item = &Thread> {
-        self.threads.iter().filter(|t| !t.mine_last && !self.commit_after(t.last_at))
+        self.review_comments.iter().chain(&self.threads).filter(|t| !t.mine_last && !self.commit_after(t.last_at))
     }
 
     pub fn author_state(&self) -> AuthorState {
@@ -162,7 +167,7 @@ impl PullRequest {
             AuthorState::ToAddress(to_address)
         } else if changes && !self.commit_after(self.changes_requested_at) {
             AuthorState::ChangesRequested
-        } else if changes || !self.threads.is_empty() {
+        } else if changes || !self.threads.is_empty() || !self.review_comments.is_empty() {
             AuthorState::WaitingForReviewer
         } else if self.review_decision == Some(ReviewDecision::Approved) {
             AuthorState::Approved
@@ -258,19 +263,42 @@ pub(crate) fn parse_inbox(v: &Value) -> Result<Inbox> {
 fn parse_pull(node: &Value, viewer: &str, requested: bool) -> Option<PullRequest> {
     let str_at = |path: &str| node.pointer(path).and_then(Value::as_str);
     let commit = node.pointer("/commits/nodes/0/commit");
-    // Dernière review de chaque reviewer : `(auteur, état, date)`.
-    let reviews: Vec<(&str, &str, Option<i64>)> = node
+    // Dernière review de chaque reviewer : `(auteur, état, date, texte)`.
+    let reviews: Vec<(&str, &str, Option<i64>, &str)> = node
         .pointer("/latestReviews/nodes")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .map(|r| {
             let text = |key: &str| r.pointer(key).and_then(Value::as_str).unwrap_or_default();
-            (text("/author/login"), text("/state"), r.get("submittedAt").and_then(Value::as_str).and_then(parse_time))
+            (text("/author/login"), text("/state"), parse_time(text("/submittedAt")), text("/body"))
         })
         .collect();
-    let mine = reviews.iter().filter(|(author, _, _)| *author == viewer).max_by_key(|(_, _, at)| *at);
-    let changes_requested_at = reviews.iter().filter(|(_, state, _)| *state == "CHANGES_REQUESTED").filter_map(|r| r.2).max();
+    let mine = reviews.iter().filter(|r| r.0 == viewer).max_by_key(|r| r.2);
+    let changes_requested_at = reviews.iter().filter(|r| r.1 == "CHANGES_REQUESTED").filter_map(|r| r.2).max();
+    // Mon dernier message dans la conversation de la PR.
+    let my_comment_at = node
+        .pointer("/comments/nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|c| c.pointer("/author/login").and_then(Value::as_str) == Some(viewer))
+        .filter_map(|c| c.get("createdAt").and_then(Value::as_str).and_then(parse_time))
+        .max();
+    let review_comments = reviews
+        .iter()
+        .filter(|(author, state, _, body)| {
+            *author != viewer && matches!(*state, "COMMENTED" | "CHANGES_REQUESTED") && !body.trim().is_empty()
+        })
+        .map(|(author, _, at, body)| Thread {
+            path: None,
+            line: None,
+            author: (*author).to_owned(),
+            body: truncate(body.trim(), MAX_COMMENT),
+            mine_last: matches!((my_comment_at, at), (Some(mine), Some(at)) if mine > *at),
+            last_at: *at,
+        })
+        .collect();
     let threads = node
         .pointer("/reviewThreads/nodes")
         .and_then(Value::as_array)
@@ -280,7 +308,7 @@ fn parse_pull(node: &Value, viewer: &str, requested: bool) -> Option<PullRequest
         .map(|t| {
             let text = |path: &str| t.pointer(path).and_then(Value::as_str).unwrap_or_default();
             Thread {
-                path: text("/path").to_owned(),
+                path: Some(text("/path").to_owned()),
                 line: t.get("line").and_then(Value::as_u64).map(|l| l as u32),
                 author: text("/first/nodes/0/author/login").to_owned(),
                 body: truncate(text("/first/nodes/0/body"), MAX_COMMENT),
@@ -314,10 +342,11 @@ fn parse_pull(node: &Value, viewer: &str, requested: bool) -> Option<PullRequest
         },
         last_commit_at: commit.and_then(|c| c.get("committedDate")).and_then(Value::as_str).and_then(parse_time),
         requested,
-        my_review_at: mine.and_then(|(_, _, at)| *at),
-        my_review_changes: mine.is_some_and(|(_, state, _)| *state == "CHANGES_REQUESTED"),
+        my_review_at: mine.and_then(|r| r.2),
+        my_review_changes: mine.is_some_and(|r| r.1 == "CHANGES_REQUESTED"),
         changes_requested_at,
         threads,
+        review_comments,
     })
 }
 
@@ -386,7 +415,7 @@ mod tests {
 
         let mine = &inbox.authored[0];
         let expected = Thread {
-            path: "b.rs".into(),
+            path: Some("b.rs".into()),
             line: None,
             author: "rev".into(),
             body: "Pourquoi ?".into(),
@@ -431,6 +460,28 @@ mod tests {
             "2026-10-27T11:00:00Z",
         );
         assert_eq!(pr.author_state(), AuthorState::ToAddress(1));
+    }
+
+    #[test]
+    fn review_summaries_count_as_comments() {
+        // Une review « Comment » sans fil en ligne (rgsystemes/mimicus#106).
+        let reviews = json!([
+            { "author": { "login": "rev" }, "state": "COMMENTED", "submittedAt": "2026-10-27T10:00:00Z", "body": " À revoir\n" },
+            { "author": { "login": "vide" }, "state": "COMMENTED", "submittedAt": "2026-10-27T10:00:00Z", "body": "" },
+            { "author": { "login": "ok" }, "state": "APPROVED", "submittedAt": "2026-10-27T10:00:00Z", "body": "LGTM" }
+        ]);
+        let pr = mine_with(vec![], reviews.clone(), "2026-10-27T09:00:00Z");
+        assert_eq!(pr.author_state(), AuthorState::ToAddress(1));
+        let comment = pr.threads_to_address().next().unwrap();
+        assert_eq!((comment.path.as_deref(), comment.author.as_str(), comment.body.as_str()), (None, "rev", "À revoir"));
+        // J'ai répondu dans la conversation, ou poussé depuis.
+        let mut node = pull("o/app", 3, "moi");
+        node["latestReviews"] = json!({ "nodes": reviews.clone() });
+        node["comments"] = json!({ "nodes": [ { "author": { "login": "moi" }, "createdAt": "2026-10-27T11:00:00Z" } ] });
+        node["commits"]["nodes"][0]["commit"]["committedDate"] = json!("2026-10-27T09:00:00Z");
+        assert_eq!(parse_pull(&node, "moi", false).unwrap().author_state(), AuthorState::WaitingForReviewer);
+        let pr = mine_with(vec![], reviews, "2026-10-27T11:00:00Z");
+        assert_eq!(pr.author_state(), AuthorState::WaitingForReviewer);
     }
 
     #[test]

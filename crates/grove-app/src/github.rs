@@ -499,9 +499,10 @@ fn address_prompt(instruction: &str, pr: &PullRequest) -> String {
     }
     prompt.push_str("\n\nPrends en compte ces commentaires de review non résolus :\n");
     for thread in threads {
-        let place = match thread.line {
-            Some(line) => format!("{}:{line}", thread.path),
-            None => thread.path.clone(),
+        let place = match (&thread.path, thread.line) {
+            (Some(path), Some(line)) => format!("{path}:{line}"),
+            (Some(path), None) => path.clone(),
+            (None, _) => "commentaire général".to_owned(),
         };
         prompt.push_str(&format!("\n- {place} (@{}) : {}", thread.author, thread.body.replace('\n', "\n  ")));
     }
@@ -648,11 +649,12 @@ mod tests {
             my_review_changes: false,
             changes_requested_at: None,
             threads: Vec::new(),
+            review_comments: Vec::new(),
         }
     }
 
     fn thread(path: &str, line: Option<u32>, body: &str, mine_last: bool) -> Thread {
-        Thread { path: path.into(), line, author: "rev".into(), body: body.into(), mine_last, last_at: Some(100) }
+        Thread { path: Some(path.into()), line, author: "rev".into(), body: body.into(), mine_last, last_at: Some(100) }
     }
 
     #[test]
@@ -664,8 +666,12 @@ mod tests {
             thread("c.rs", None, "Déjà répondu", true),
             thread("b.md", None, "Typo", false),
         ];
+        pr.review_comments = vec![Thread { path: None, ..thread("", None, "Globalement OK", false) }];
         let prompt = address_prompt("/fix", &pr);
-        assert!(prompt.ends_with("\n- src/a.rs:4 (@rev) : Nom ?\n  À revoir\n- b.md (@rev) : Typo"), "{prompt}");
+        assert!(
+            prompt.ends_with("\n- commentaire général (@rev) : Globalement OK\n- src/a.rs:4 (@rev) : Nom ?\n  À revoir\n- b.md (@rev) : Typo"),
+            "{prompt}"
+        );
     }
 
     #[test]
