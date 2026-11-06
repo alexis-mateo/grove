@@ -84,8 +84,8 @@ impl BranchPicker {
     }
 }
 
-/// « ↑2 ↓1 ●3 » : avance, retard, fichiers modifiés. Avec un remote, avance et
-/// retard s'affichent sur le bouton de synchronisation.
+/// « ↑2 ↓1 » : avance et retard. Avec un remote, ils s'affichent sur le bouton
+/// de synchronisation. Les fichiers modifiés (« ●3 ») ont leur propre bouton.
 fn status_text(status: &CheckoutStatus) -> String {
     let mut parts = Vec::new();
     if status.has_remote {
@@ -95,9 +95,6 @@ fn status_text(status: &CheckoutStatus) -> String {
     }
     if status.behind > 0 && !status.has_remote {
         parts.push(format!("↓{}", status.behind));
-    }
-    if status.changed > 0 {
-        parts.push(format!("●{}", status.changed));
     }
     parts.join(" ")
 }
@@ -360,6 +357,7 @@ impl GroveView {
         let git = self.git.get(&key.1)?;
         let head = git.head.as_ref()?;
         let status = git.status.as_ref().map(status_text).unwrap_or_default();
+        let changed = git.status.map(|s| s.changed).filter(|n| *n > 0);
         Some(
             div()
                 .id("branch-chip")
@@ -385,6 +383,22 @@ impl GroveView {
                 .child(icon(Icon::GitBranch, theme::accent()))
                 .child(div().flex().max_w(px(200.0)).min_w_0().child(marquee("branch-chip-label", head.label().to_owned())))
                 .when(!status.is_empty(), |d| d.child(div().text_xs().text_color(theme::text_faint()).child(status)))
+                .children(changed.map(|n| {
+                    div()
+                        .id("changed-files")
+                        .px_1()
+                        .rounded_sm()
+                        .text_xs()
+                        .text_color(theme::text_faint())
+                        .hover(|s| s.bg(theme::selected()).text_color(theme::text()))
+                        .when(self.diff.is_some(), |d| d.bg(theme::selected()).text_color(theme::text()))
+                        .tooltip(tooltip(format!("{n} fichier(s) modifié(s) : voir le diff · Ctrl+Shift+E")))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.toggle_diff(window, cx);
+                        }))
+                        .child(format!("●{n}"))
+                }))
                 .into_any_element(),
         )
     }

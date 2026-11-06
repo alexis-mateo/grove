@@ -311,6 +311,8 @@ impl GroveView {
             workspace.add_claude_tab(session_id, self.config.claude.view);
             self.claude.history = None;
             self.github.panel = None;
+            self.diff = None;
+            self.usage_panel = None;
             self.save();
             self.focus_active(window, cx);
             cx.notify();
@@ -319,6 +321,8 @@ impl GroveView {
 
     pub(crate) fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.github.panel = None;
+        self.diff = None;
+        self.usage_panel = None;
         if self.claude.history.take().is_some() {
             self.focus_active(window, cx);
         } else if let Some(workspace) = self.state.active_workspace.and_then(|key| self.state.workspace(key)) {

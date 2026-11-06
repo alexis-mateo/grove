@@ -1,7 +1,7 @@
 //! Liste des raccourcis clavier (specs §11.3), générée depuis les `KeyBinding`
 //! enregistrés : elle ne peut pas diverger du comportement.
 
-use gpui::KeyBinding;
+use gpui::{Action, KeyBinding};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Group {
@@ -65,10 +65,14 @@ fn describe(action: &str) -> Option<(Group, &'static str)> {
         "grove::ShowPullRequests" => (Group::Workspaces, "Pull requests GitHub"),
         "grove::ToggleSidebar" => (Group::Sidebar, "Afficher / masquer la sidebar"),
         "grove::OpenSettings" => (Group::Grove, "Paramètres"),
+        "grove::CommandPalette" => (Group::Grove, "Palette de commandes"),
+        "grove::ShowDiff" => (Group::Branches, "Modifications de l'espace (diff)"),
+        "grove::ShowUsage" => (Group::Claude, "Usage Claude par jour et par projet"),
         "terminal::Copy" => (Group::Terminal, "Copier la sélection"),
         "terminal::Paste" => (Group::Terminal, "Coller"),
         "terminal::ScrollPageUp" => (Group::Terminal, "Remonter d'une page dans le scrollback"),
         "terminal::ScrollPageDown" => (Group::Terminal, "Descendre d'une page dans le scrollback"),
+        "terminal::Search" => (Group::Terminal, "Chercher dans le scrollback"),
         _ => return None,
     })
 }
@@ -133,6 +137,34 @@ pub(crate) fn list(bindings: &[KeyBinding]) -> Vec<Shortcut> {
     shortcuts
 }
 
+/// Actions sans raccourci, proposées dans la palette de commandes.
+fn unbound() -> Vec<Box<dyn Action>> {
+    vec![Box::new(crate::grove_view::ShowUsage)]
+}
+
+/// Commandes de la palette : chaque action décrite (avec ses raccourcis), une seule fois.
+pub(crate) fn commands(bindings: &[KeyBinding]) -> Vec<(Box<dyn Action>, Shortcut)> {
+    let mut commands: Vec<(Box<dyn Action>, Shortcut)> = Vec::new();
+    let shortcuts = list(bindings);
+    for binding in bindings {
+        let name = binding.action().name();
+        let Some((_, description)) = describe(name) else { continue };
+        if commands.iter().any(|(action, _)| action.name() == name) {
+            continue;
+        }
+        if let Some(shortcut) = shortcuts.iter().find(|s| s.description == description) {
+            commands.push((binding.action().boxed_clone(), shortcut.clone()));
+        }
+    }
+    for action in unbound() {
+        if let Some((group, description)) = describe(action.name()) {
+            commands.push((action, Shortcut { group, description, keys: String::new() }));
+        }
+    }
+    commands.sort_by_key(|(_, s)| s.group);
+    commands
+}
+
 /// Recherche par action ou par touche, sans casse ni accents de touche.
 pub(crate) fn matches(shortcut: &Shortcut, query: &str) -> bool {
     let query = query.trim().to_lowercase();
@@ -169,6 +201,15 @@ mod tests {
         let next = shortcuts.iter().find(|s| s.description == "Onglet suivant").unwrap();
         assert_eq!(next.keys, "Ctrl+PageDown, Ctrl+Tab");
         assert!(shortcuts.windows(2).all(|w| w[0].group <= w[1].group));
+    }
+
+    #[test]
+    fn palette_lists_each_action_once() {
+        let commands = commands(&crate::grove_view::key_bindings());
+        let next: Vec<_> = commands.iter().filter(|(_, s)| s.description == "Onglet suivant").collect();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].1.keys, "Ctrl+PageDown, Ctrl+Tab");
+        assert!(commands.iter().any(|(a, s)| a.name() == "grove::ShowUsage" && s.keys.is_empty()));
     }
 
     #[test]

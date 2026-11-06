@@ -192,6 +192,8 @@ impl GroveView {
         }
         self.leave_settings(cx);
         self.claude.history = None;
+        self.diff = None;
+        self.usage_panel = None;
         let focus = cx.focus_handle();
         window.focus(&focus);
         // Le projet actif d'abord, s'il est sur GitHub.

@@ -16,6 +16,6 @@ pub use graphics::{Image, Placeholder};
 pub use links::{Link, is_openable};
 pub use progress::Progress;
 pub use terminal::{
-    CellFlags, CursorShape, RenderCell, Rgb, SelectionKind, Snapshot, TermMode, Terminal, TerminalEvent,
+    CellFlags, CursorShape, RenderCell, Rgb, SearchCount, SelectionKind, Snapshot, TermMode, Terminal, TerminalEvent,
     TerminalOptions,
 };

@@ -19,9 +19,21 @@ use grove_term::{
 
 use crate::images::ImageCache;
 use crate::mouse::{self, Action};
-use crate::{builtin_glyphs, fonts, keys};
+use crate::text_field::{self, Edit, TextField};
+use crate::ui::{Icon, icon, icon_button, tooltip};
+use crate::{builtin_glyphs, fonts, keys, theme};
 
-actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
+actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown, Search]);
+
+/// Barre de recherche dans le scrollback (`Ctrl+Shift+F`).
+struct SearchBar {
+    field: TextField,
+    focus: FocusHandle,
+    /// Résultat de la dernière recherche ; `None` : champ vide.
+    found: Option<bool>,
+    /// « 3/12 » : rang de la correspondance sélectionnée et total.
+    count: Option<grove_term::SearchCount>,
+}
 
 /// Hauteur de ligne relative à la taille de police.
 const LINE_HEIGHT: f32 = 1.3;
@@ -54,6 +66,7 @@ pub struct TerminalView {
     marked_text: Option<String>,
     /// Textures des images du protocole graphique de kitty.
     images: Rc<RefCell<ImageCache>>,
+    search: Option<SearchBar>,
     _events: Task<()>,
 }
 
@@ -128,6 +141,7 @@ impl TerminalView {
             selecting: false,
             marked_text: None,
             images: Rc::default(),
+            search: None,
             _events: events,
         }
     }
@@ -206,6 +220,132 @@ impl TerminalView {
         self.font = font(fonts::resolve_family(family));
         self.font_size = px(size);
         cx.notify();
+    }
+
+    /// Ouvre la barre de recherche (ou la reprend), préremplie avec la sélection
+    /// si elle tient sur une ligne.
+    fn open_search(&mut self, _: &Search, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.terminal.selection_text().filter(|t| !t.contains('\n') && t.chars().count() <= 200);
+        let bar = self.search.get_or_insert_with(|| SearchBar { field: TextField::default(), focus: cx.focus_handle(), found: None, count: None });
+        match selection {
+            Some(text) if text != bar.field.as_str() => {
+                bar.field = TextField::selected(text);
+                bar.found = Some(self.terminal.set_search(bar.field.as_str()));
+                bar.count = self.terminal.search_count();
+            }
+            _ => bar.field = TextField::selected(bar.field.as_str().to_owned()),
+        }
+        window.focus(&bar.focus);
+        cx.notify();
+    }
+
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.take().is_some() {
+            self.terminal.clear_search();
+        }
+        window.focus(&self.focus_handle);
+        cx.notify();
+    }
+
+    fn search_step(&mut self, older: bool, cx: &mut Context<Self>) {
+        if let Some(bar) = &mut self.search
+            && !bar.field.is_empty()
+        {
+            bar.found = Some(self.terminal.search_step(older));
+            bar.count = self.terminal.search_count();
+            cx.notify();
+        }
+    }
+
+    /// Entrée ou ↑ : plus ancien (vers le haut) ; Maj+Entrée ou ↓ : plus récent.
+    fn search_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        match keystroke.key.as_str() {
+            "escape" => self.close_search(window, cx),
+            "enter" => self.search_step(!keystroke.modifiers.shift, cx),
+            "up" => self.search_step(true, cx),
+            "down" => self.search_step(false, cx),
+            _ => {
+                let Some(bar) = &mut self.search else { return };
+                match bar.field.key_down(keystroke, cx) {
+                    Edit::Ignored => return,
+                    Edit::Changed | Edit::Copy { cut: true, .. } => {
+                        let found = self.terminal.set_search(bar.field.as_str());
+                        bar.found = (!bar.field.is_empty()).then_some(found);
+                        bar.count = bar.found.and_then(|_| self.terminal.search_count());
+                    }
+                    Edit::Selection | Edit::Copy { .. } => {}
+                }
+                cx.notify();
+            }
+        }
+        cx.stop_propagation();
+    }
+
+    fn render_search(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let bar = self.search.as_ref()?;
+        let status = match (bar.found, bar.count) {
+            (Some(false), _) => Some(div().flex_none().text_xs().text_color(theme::danger()).child("aucun résultat")),
+            (Some(true), Some(count)) => {
+                let total = if count.more { format!("{}+", count.total) } else { count.total.to_string() };
+                let text = match count.current {
+                    Some(current) => format!("{current}/{total}"),
+                    None => format!("?/{total}"),
+                };
+                Some(div().flex_none().text_xs().text_color(theme::text_muted()).child(text))
+            }
+            _ => None,
+        };
+        Some(
+            div()
+                .id("terminal-search")
+                .key_context("TerminalSearch")
+                .track_focus(&bar.focus)
+                .occlude()
+                .on_key_down(cx.listener(Self::search_key_down))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                    if let Some(bar) = &this.search {
+                        window.focus(&bar.focus);
+                    }
+                    cx.stop_propagation();
+                }))
+                .absolute()
+                .top_2()
+                .right_3()
+                .w(px(360.0))
+                .h(px(34.0))
+                .flex()
+                .items_center()
+                .gap_1()
+                .pl_2p5()
+                .pr_1()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme::border_strong())
+                .bg(theme::elevated())
+                .shadow_lg()
+                .text_sm()
+                .child(icon(Icon::Search, theme::text_faint()))
+                .child(div().flex_1().min_w_0().overflow_hidden().child(bar.field.render("Chercher dans le terminal…")))
+                .child(text_field::input_target(&bar.focus, cx.entity()))
+                .children(status)
+                .child(
+                    icon_button("search-older", Icon::ArrowUp)
+                        .tooltip(tooltip("Plus ancien · Entrée"))
+                        .on_click(cx.listener(|this, _, _, cx| this.search_step(true, cx))),
+                )
+                .child(
+                    icon_button("search-newer", Icon::ArrowDown)
+                        .tooltip(tooltip("Plus récent · Maj+Entrée"))
+                        .on_click(cx.listener(|this, _, _, cx| this.search_step(false, cx))),
+                )
+                .child(
+                    icon_button("search-close", Icon::X)
+                        .tooltip(tooltip("Fermer · Échap"))
+                        .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+                )
+                .into_any_element(),
+        )
     }
 
     fn scroll_page(&mut self, up: bool, cx: &mut Context<Self>) {
@@ -414,7 +554,8 @@ impl Render for TerminalView {
             None => "[processus terminé]".to_owned(),
         });
 
-        div()
+        let search = self.render_search(cx);
+        let grid = div()
             .id("terminal")
             .key_context("Terminal")
             .track_focus(&self.focus_handle)
@@ -423,6 +564,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste_clipboard))
             .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.scroll_page(true, cx)))
             .on_action(cx.listener(|this, _: &ScrollPageDown, _, cx| this.scroll_page(false, cx)))
+            .on_action(cx.listener(Self::open_search))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
@@ -500,7 +642,9 @@ impl Render for TerminalView {
                     .right_3()
                     .text_color(Hsla::from(Rgba { r: 0.6, g: 0.65, b: 0.6, a: 1.0 }))
                     .child(SharedString::from(text))
-            }))
+            }));
+        // La barre est à côté de la grille, pas dedans : ses touches ne vont pas au programme.
+        div().size_full().relative().child(grid).children(search)
     }
 }
 
@@ -530,7 +674,11 @@ impl EntityInputHandler for TerminalView {
     }
 
     /// Texte validé par la méthode de saisie : envoyé tel quel au programme.
-    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.as_ref().is_some_and(|bar| bar.focus.is_focused(window)) {
+            let event = KeyDownEvent { keystroke: TextField::composed(text), is_held: false };
+            return self.search_key_down(&event, window, cx);
+        }
         self.marked_text = None;
         if !text.is_empty() {
             self.terminal.scroll_to_bottom();
@@ -639,6 +787,11 @@ fn paint_grid(
         }
     }
     const SELECTION: Rgb = Rgb { r: 0x3a, g: 0x4d, b: 0x44 };
+    // Correspondances de la recherche ; celle en cours est la sélection.
+    const MATCH: Rgb = Rgb { r: 0x5c, g: 0x4a, b: 0x1e };
+    for cell in cells.iter_mut().filter(|c| c.matched && !c.selected) {
+        cell.bg = MATCH;
+    }
     for cell in cells.iter_mut().filter(|c| c.selected) {
         cell.bg = SELECTION;
     }

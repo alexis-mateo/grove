@@ -378,6 +378,19 @@ impl GroveView {
                         .child(line("usage-legend", "│ repère : temps écoulé"))
                         .child(line("usage-updated", updated)),
                 )
+                .child(
+                    div()
+                        .id("usage-history-link")
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_color(theme::link())
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_usage_panel(window, cx)))
+                        .child("Usage par jour et par projet")
+                        .child(crate::ui::icon(crate::ui::Icon::ChevronRight, theme::link())),
+                )
         });
 
         Some(

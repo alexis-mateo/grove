@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::search::RegexSearch;
+use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{self, Term};
 use alacritty_terminal::tty;
 use anyhow::{Context, Result};
@@ -24,6 +24,19 @@ use crate::pty::GraphicsPty;
 pub use alacritty_terminal::term::TermMode;
 pub use alacritty_terminal::term::cell::Flags as CellFlags;
 pub use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+
+/// Au-delà, le compteur de la recherche affiche « 1000+ ».
+const MAX_SEARCH_COUNT: usize = 1000;
+
+/// Où en est la recherche dans le scrollback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchCount {
+    /// Rang de la correspondance sélectionnée, en partant du haut (1 = la plus ancienne).
+    pub current: Option<usize>,
+    pub total: usize,
+    /// Plus de `total` correspondances : le décompte s'est arrêté.
+    pub more: bool,
+}
 
 /// Ce que couvre une sélection à la souris.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +97,8 @@ pub struct Terminal {
     url_regex: Mutex<RegexSearch>,
     /// Images du protocole graphique de kitty, reçues par le thread d'E/S.
     graphics: Arc<Mutex<Graphics>>,
+    /// Recherche dans le scrollback en cours. Toujours verrouillée après `term`.
+    search: Mutex<Option<RegexSearch>>,
 }
 
 impl Terminal {
@@ -128,6 +143,7 @@ impl Terminal {
             palette: Palette::default(),
             url_regex: Mutex::new(links::url_regex()),
             graphics,
+            search: Mutex::new(None),
         })
     }
 
@@ -228,6 +244,74 @@ impl Terminal {
         term.selection_to_string().filter(|text| !text.is_empty())
     }
 
+    /// Cherche `query` (texte littéral, casse ignorée s'il n'a pas de majuscule)
+    /// en remontant depuis le bas de l'écran visible. La correspondance trouvée
+    /// devient la sélection, affichée à l'écran. Vide : arrête la recherche.
+    pub fn set_search(&self, query: &str) -> bool {
+        let mut term = self.term.lock();
+        let mut search = self.search.lock().unwrap();
+        *search = None;
+        if query.is_empty() {
+            term.selection = None;
+            return false;
+        }
+        let Ok(mut regex) = RegexSearch::new(&escape_regex(query)) else { return false };
+        let found = term.search_next(&mut regex, bottom_of_screen(&term), Direction::Left, Side::Right, None);
+        *search = Some(regex);
+        select_match(&mut term, found)
+    }
+
+    /// Correspondance suivante : plus ancienne (vers le haut) ou plus récente.
+    /// Repart de la sélection, que le terminal déplace avec le contenu.
+    pub fn search_step(&self, older: bool) -> bool {
+        let mut term = self.term.lock();
+        let mut search = self.search.lock().unwrap();
+        let Some(regex) = search.as_mut() else { return false };
+        let current = term.selection.as_ref().and_then(|s| s.to_range(&term));
+        let found = match current {
+            Some(range) if older => {
+                let origin = range.start.sub(&*term, Boundary::None, 1);
+                term.search_next(regex, origin, Direction::Left, Side::Right, None)
+            }
+            Some(range) => {
+                let origin = range.end.add(&*term, Boundary::None, 1);
+                term.search_next(regex, origin, Direction::Right, Side::Left, None)
+            }
+            None => term.search_next(regex, bottom_of_screen(&term), Direction::Left, Side::Right, None),
+        };
+        select_match(&mut term, found)
+    }
+
+    /// Nombre de correspondances dans tout le scrollback, et rang de la sélectionnée.
+    pub fn search_count(&self) -> Option<SearchCount> {
+        let term = self.term.lock();
+        let mut search = self.search.lock().unwrap();
+        let regex = search.as_mut()?;
+        let current = term.selection.as_ref().and_then(|s| s.to_range(&term)).map(|r| r.start);
+        let top = Point::new(term.topmost_line(), Column(0));
+        let bottom = Point::new(term.bottommost_line(), term.last_column());
+        let mut count = SearchCount { current: None, total: 0, more: false };
+        for found in RegexIter::new(top, bottom, Direction::Right, &term, regex) {
+            if count.total == MAX_SEARCH_COUNT {
+                count.more = true;
+                break;
+            }
+            count.total += 1;
+            if Some(*found.start()) == current {
+                count.current = Some(count.total);
+            }
+        }
+        Some(count)
+    }
+
+    /// Arrête la recherche et retire la correspondance sélectionnée.
+    pub fn clear_search(&self) {
+        let mut term = self.term.lock();
+        if self.search.lock().unwrap().take().is_some() {
+            term.selection = None;
+        }
+    }
+
     pub fn palette(&self) -> &Palette {
         &self.palette
     }
@@ -235,6 +319,15 @@ impl Terminal {
     /// Copie de l'écran visible, couleurs résolues, prête à dessiner.
     pub fn snapshot(&self) -> Snapshot {
         let term = self.term.lock();
+        // Correspondances de la recherche visibles à l'écran, surlignées.
+        let matches: Vec<Match> = match self.search.lock().unwrap().as_mut() {
+            Some(regex) => {
+                let offset = term.grid().display_offset() as i32;
+                let top = Point::new(Line(-offset), Column(0));
+                RegexIter::new(top, bottom_of_screen(&term), Direction::Right, &term, regex).collect()
+            }
+            None => Vec::new(),
+        };
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
         let columns = term.columns();
@@ -265,6 +358,7 @@ impl Terminal {
                 fg = bg;
             }
             let selected = content.selection.is_some_and(|s| s.contains(indexed.point));
+            let matched = matches.iter().any(|m| m.contains(&indexed.point));
             cells.push(RenderCell {
                 row: (indexed.point.line.0 + offset) as usize,
                 column: indexed.point.column.0,
@@ -274,6 +368,7 @@ impl Terminal {
                 bg,
                 flags: cell.flags,
                 selected,
+                matched,
                 placeholder,
             });
         }
@@ -327,6 +422,8 @@ pub struct RenderCell {
     pub bg: Rgb,
     pub flags: Flags,
     pub selected: bool,
+    /// Fait partie d'une correspondance de la recherche dans le scrollback.
+    pub matched: bool,
     /// Cellule d'image (caractère U+10EEEE du protocole graphique de kitty).
     pub placeholder: Option<Placeholder>,
 }
@@ -360,6 +457,37 @@ fn visible_point(term: &Term<Listener>, row: usize, column: usize) -> Point {
     let offset = term.grid().display_offset() as i32;
     let row = row.min(term.screen_lines().saturating_sub(1)) as i32;
     Point::new(Line(row - offset), Column(column.min(term.columns().saturating_sub(1))))
+}
+
+/// Dernière cellule de l'écran visible.
+fn bottom_of_screen(term: &Term<Listener>) -> Point {
+    let offset = term.grid().display_offset() as i32;
+    Point::new(Line(term.screen_lines() as i32 - 1 - offset), Column(term.columns().saturating_sub(1)))
+}
+
+/// Sélectionne la correspondance et la fait défiler à l'écran.
+fn select_match(term: &mut Term<Listener>, found: Option<Match>) -> bool {
+    let Some(found) = found else {
+        term.selection = None;
+        return false;
+    };
+    let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
+    selection.update(*found.end(), Side::Right);
+    term.selection = Some(selection);
+    term.scroll_to_point(*found.start());
+    true
+}
+
+/// Texte cherché tel quel : les caractères spéciaux des regex sont échappés.
+fn escape_regex(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 fn side(right: bool) -> Side {
@@ -574,6 +702,44 @@ mod tests {
 
         terminal.clear_selection();
         assert_eq!(terminal.selection_text(), None);
+    }
+
+    #[test]
+    fn searches_the_scrollback() {
+        let mut options = TerminalOptions::new("/bin/sh");
+        options.lines = 5;
+        options.args = vec!["-c".into(), "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo \"ligne $i (x)\"; done; sleep 5".into()];
+        let terminal = Terminal::spawn(options, |_| {}).unwrap();
+        wait_for(&terminal, |s| (0..s.lines).any(|r| s.line_text(r) == "ligne 12 (x)"));
+
+        // Littéral, casse ignorée : « (x) » n'est pas un groupe de regex.
+        // Une majuscule rend la recherche sensible à la casse.
+        assert!(!terminal.set_search("LIGNE 1"));
+        assert!(terminal.set_search("ligne 1"));
+        // Depuis le bas : « ligne 12 » d'abord, puis en remontant 11, 10, 1.
+        assert_eq!(terminal.selection_text().as_deref(), Some("ligne 1"));
+        let line = |t: &Terminal| {
+            let s = t.snapshot();
+            (0..s.lines).find(|r| s.cells.iter().any(|c| c.row == *r && c.selected)).map(|r| s.line_text(r))
+        };
+        assert_eq!(line(&terminal).as_deref(), Some("ligne 12 (x)"));
+        assert!(terminal.search_step(true));
+        assert_eq!(line(&terminal).as_deref(), Some("ligne 11 (x)"));
+        assert!(terminal.search_step(true));
+        assert!(terminal.search_step(true));
+        // « ligne 1 » est dans l'historique : l'écran a défilé jusqu'à elle.
+        assert_eq!(line(&terminal).as_deref(), Some("ligne 1 (x)"));
+        assert!(terminal.snapshot().display_offset > 0);
+        assert_eq!(terminal.search_count(), Some(SearchCount { current: Some(1), total: 4, more: false }));
+        assert!(terminal.search_step(false));
+        assert_eq!(line(&terminal).as_deref(), Some("ligne 10 (x)"));
+        assert_eq!(terminal.search_count().unwrap().current, Some(2));
+        assert!(terminal.set_search("(x)"));
+        assert!(terminal.snapshot().cells.iter().any(|c| c.matched && !c.selected), "les autres correspondances sont surlignées");
+
+        terminal.clear_search();
+        assert_eq!(terminal.selection_text(), None);
+        assert!(!terminal.snapshot().cells.iter().any(|c| c.matched));
     }
 
     #[test]

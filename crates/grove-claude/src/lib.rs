@@ -17,6 +17,7 @@ mod session;
 mod settings;
 mod stream;
 pub mod transcripts;
+pub mod usage_history;
 pub mod usage_api;
 
 pub use client::{run_hook, run_statusline};

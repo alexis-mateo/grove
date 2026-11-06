@@ -1,12 +1,14 @@
 //! Lecture git (via `gix`), surveillance de `HEAD` et branches (CLI `git`).
 
 mod branches;
+mod diff;
 mod worktrees;
 
 pub use branches::{
     Branch, CheckoutStatus, checkout_status, create, default_branch, delete, fetch, list_branches, remotes, switch,
     sync,
 };
+pub use diff::{ChangedFile, DiffLine, DiffLineKind, FileChange, FileDiff, changed_files, file_diff};
 pub use worktrees::{
     NewWorktree, Worktree, add_worktree, exclude, list_worktrees, remove_worktree, stash_pop, stash_push,
 };

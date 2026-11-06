@@ -252,7 +252,7 @@ Exigences minimales pour un usage quotidien (et pour faire tourner le TUI de Cla
 
 - couleurs 24 bits, attributs (gras, italique, souligné, inverse) ;
 - redimensionnement (SIGWINCH) ;
-- scrollback configurable, recherche dans le scrollback ;
+- scrollback configurable, recherche dans le scrollback (`Ctrl+Shift+F` : texte littéral, correspondance en cours sélectionnée, autres surlignées) ;
 - sélection souris (glisser, double-clic mot, triple-clic ligne ; `Shift` quand le programme capte la souris), copier/coller (`Ctrl+Shift+C/V`, sélection primaire au clic milieu), **bracketed paste** ;
 - reporting souris (pour les TUI) ;
 - saisie clavier complète, y compris les combinaisons Alt/Ctrl et l'IME (texte composé reçu par un `InputHandler` GPUI : sous IBus, une lettre accentuée n'arrive pas comme une frappe) ;
@@ -394,7 +394,7 @@ Claude Code ne transmet `rate_limits` qu'**après la première réponse** d'une 
   - fraîcheur de la donnée (« mis à jour il y a 12 min » quand aucune session n'a tourné récemment).
 - Couleurs par seuil : vert, ambre à partir de 70 %, rouge à partir de 90 %.
 - **Notification système** quand la fenêtre de 5 h franchit 90 % puis 100 %, une fois par seuil et par fenêtre.
-- Plus tard : historique de consommation par jour et par projet (cf. §8.6).
+- Historique de consommation par jour, par projet et par modèle : relu dans les transcripts (tokens de chaque réponse, coût estimé au tarif de l'API, cf. README). L'export OpenTelemetry (§8.6) reste optionnel.
 
 ### 8.6 Optionnel
 
@@ -469,7 +469,7 @@ Action « déplacer ce travail dans un worktree » :
 ### 9.5 Infos git par espace de travail
 
 - Branche, avance/retard par rapport à la base et au remote, nombre de fichiers modifiés : pastille de la barre d'onglets (§7.4), commune aux espaces directs et worktrees. L'avance et le retard sont calculés par rapport à la branche suivie ; par rapport à la base : plus tard.
-- Vue diff simple (fichiers modifiés → diff) : plus tard.
+- Vue diff simple (`Ctrl+Shift+E`, ou `●3` de la pastille) : fichiers modifiés par rapport à `HEAD` → diff du fichier, relue quand l'état git change.
 
 ---
 
@@ -589,6 +589,7 @@ command = "docker compose exec db psql -U app"
 - Liste de tous les raccourcis, groupés (onglets, espaces de travail, branches, Claude, sidebar, terminal), avec recherche par action ou par touche.
 - Générée depuis les `KeyBinding` enregistrés : une seule source, la liste ne peut pas diverger du comportement.
 - Accessible depuis les Paramètres ; un raccourci direct reste à choisir, sans masquer une touche utile aux programmes du terminal (`Ctrl+/` envoie `^_`, utilisé par nano ou emacs).
+- Palette de commandes (`Ctrl+Shift+K`) : les mêmes actions, plus celles sans raccourci et les espaces de travail, lancées depuis l'onglet actif.
 - Plus tard : personnalisation (`[keys]` dans `config.toml`), avec détection des conflits.
 
 ---

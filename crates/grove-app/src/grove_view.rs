@@ -54,6 +54,9 @@ actions!(
         FocusPaneRight,
         FocusPaneUp,
         FocusPaneDown,
+        CommandPalette,
+        ShowDiff,
+        ShowUsage,
     ]
 );
 
@@ -82,9 +85,13 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("ctrl-shift-v", crate::terminal_view::Paste, Some("Terminal")),
         KeyBinding::new("shift-pageup", crate::terminal_view::ScrollPageUp, Some("Terminal")),
         KeyBinding::new("shift-pagedown", crate::terminal_view::ScrollPageDown, Some("Terminal")),
+        KeyBinding::new("ctrl-shift-f", crate::terminal_view::Search, Some("Terminal")),
         // Ctrl+, n'envoie rien d'utile aux programmes du terminal (specs §11.3).
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-shift-p", ShowPullRequests, None),
+        // Ctrl+Shift+P, celui des éditeurs, ouvre déjà les pull requests.
+        KeyBinding::new("ctrl-shift-k", CommandPalette, None),
+        KeyBinding::new("ctrl-shift-e", ShowDiff, None),
         // D : à droite, S : en dessous.
         KeyBinding::new("ctrl-shift-d", SplitRight, None),
         KeyBinding::new("ctrl-shift-s", SplitDown, None),
@@ -157,6 +164,12 @@ pub struct GroveView {
     /// Premier message d'une session Claude pas encore lancée (review d'une PR…).
     pub(crate) pending_prompts: HashMap<TabId, String>,
     pub(crate) github: GitHub,
+    pub(crate) palette: Option<crate::palette::Palette>,
+    /// Vue diff de l'espace actif, à la place des onglets.
+    pub(crate) diff: Option<crate::diff_view::DiffPanel>,
+    /// Usage Claude par jour et par projet, à la place des onglets.
+    pub(crate) usage_panel: Option<crate::usage_panel::UsagePanel>,
+    pub(crate) usage_scanner: std::sync::Arc<std::sync::Mutex<grove_claude::usage_history::Scanner>>,
     /// Espace dont le prochain changement de branche vient de Grove (pas d'avertissement).
     pub(crate) expected_head_change: Option<WorkspaceId>,
     /// Worktrees de chaque projet, pour importer ceux créés hors de Grove.
@@ -254,6 +267,10 @@ impl GroveView {
             pending_commands: HashMap::new(),
             pending_prompts: HashMap::new(),
             github: GitHub::default(),
+            palette: None,
+            diff: None,
+            usage_panel: None,
+            usage_scanner: crate::usage_panel::new_scanner(),
             expected_head_change: None,
             paths,
             config,
@@ -357,6 +374,9 @@ impl GroveView {
                     && git.status != status
                 {
                     git.status = status;
+                    if this.diff.as_ref().is_some_and(|d| d.workspace.1 == workspace) {
+                        this.reload_diff_files(cx);
+                    }
                     cx.notify();
                 }
             });
@@ -436,6 +456,9 @@ impl GroveView {
         self.rename = None;
         self.claude.history = None;
         self.github.panel = None;
+        self.diff = None;
+        self.usage_panel = None;
+        self.palette = None;
         self.branch_picker = None;
         self.profile_picker = None;
         self.worktree_dialog = None;
@@ -452,6 +475,8 @@ impl GroveView {
         workspace.active_tab = Some(tab);
         self.state.active_workspace = Some(key);
         self.github.panel = None;
+        self.diff = None;
+        self.usage_panel = None;
         self.leave_settings(cx);
         self.save();
         self.focus_active(window, cx);
@@ -685,6 +710,12 @@ impl GroveView {
         if let Some(panel) = &self.github.panel {
             return window.focus(&panel.focus);
         }
+        if let Some(panel) = &self.diff {
+            return window.focus(&panel.focus);
+        }
+        if let Some(panel) = &self.usage_panel {
+            return window.focus(&panel.focus);
+        }
         let focus = self.active_view(window, cx).and_then(|_| {
             let tab = self.active_pane()?.2;
             match self.natives.get(&tab) {
@@ -798,6 +829,8 @@ impl EntityInputHandler for GroveView {
             self.profile_picker_key_down(&event, window, cx);
         } else if self.worktree_dialog.as_ref().is_some_and(|d| focused(&d.focus)) {
             self.worktree_dialog_key_down(&event, window, cx);
+        } else if self.palette.as_ref().is_some_and(|p| focused(&p.focus)) {
+            self.palette_key_down(&event, window, cx);
         }
     }
 
@@ -862,7 +895,13 @@ impl Render for GroveView {
                     .min_h_0()
                     .relative()
                     .flex()
-                    .child(match (self.render_pull_requests(cx).or_else(|| self.render_history(cx)), panes) {
+                    .child(match (
+                        self.render_pull_requests(cx)
+                            .or_else(|| self.render_history(cx))
+                            .or_else(|| self.render_diff(cx))
+                            .or_else(|| self.render_usage_panel(cx)),
+                        panes,
+                    ) {
                         (Some(view), _) => div().size_full().child(view).into_any_element(),
                         (None, Some(panes)) => div()
                             .size_full()
@@ -911,6 +950,9 @@ impl Render for GroveView {
             .on_action(cx.listener(|this, _: &NextWaiting, window, cx| this.next_waiting(window, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, window, cx| this.toggle_history(window, cx)))
             .on_action(cx.listener(|this, _: &ShowPullRequests, window, cx| this.toggle_pull_requests(window, cx)))
+            .on_action(cx.listener(|this, _: &CommandPalette, window, cx| this.toggle_palette(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowDiff, window, cx| this.toggle_diff(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.toggle_usage_panel(window, cx)))
             .on_action(cx.listener(|this, _: &OpenBranches, window, cx| this.open_branch_picker(window, cx)))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 if let Some((project, _)) = this.state.active_workspace {
@@ -964,7 +1006,9 @@ impl Render for GroveView {
                 Some(settings) => settings,
                 None => main.into_any_element(),
             })
-            .when(self.sidebar_visible, |d| d.child(self.render_sidebar_handle(cx)));
+            .when(self.sidebar_visible, |d| d.child(self.render_sidebar_handle(cx)))
+            // Centrée sur la fenêtre, sous la barre d'onglets.
+            .children(self.render_palette(cx));
 
         window_frame::frame(content.into_any_element(), window)
     }

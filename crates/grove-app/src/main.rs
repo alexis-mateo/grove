@@ -1,6 +1,7 @@
 mod branches;
 mod builtin_glyphs;
 mod claude;
+mod diff_view;
 mod fonts;
 mod github;
 mod grove_view;
@@ -11,6 +12,7 @@ mod markdown;
 mod marquee;
 mod mouse;
 mod native_view;
+mod palette;
 mod panes;
 mod profiles;
 mod settings;
@@ -22,6 +24,7 @@ mod text_field;
 mod theme;
 mod ui;
 mod usage;
+mod usage_panel;
 mod window_frame;
 mod worktrees;
 

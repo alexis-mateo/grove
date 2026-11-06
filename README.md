@@ -10,14 +10,15 @@ suppression, import). Phase 4 commencée : vue native des sessions Claude
 (stream-json, permissions, bascule avec le terminal). Phase 5 : profils de
 terminal (shell, SSH, commande), page Paramètres et liste des raccourcis.
 Phase 6 commencée : pull requests ouvertes (à reviewer, les miennes), reviews et
-commentaires confiés à Claude.
+commentaires confiés à Claude. Aussi : recherche dans le scrollback, palette de
+commandes, vue diff des modifications, usage Claude par jour et par projet.
 
 | Crate | Rôle |
 |---|---|
 | `grove-core` | Modèle (projets, espaces de travail, onglets), config, persistance de l'état |
 | `grove-term` | PTY + émulation `alacritty_terminal`, couleurs résolues, sans dépendance à l'UI |
 | `grove-claude` | Hooks et statusline de Claude Code (socket Unix), état des sessions, transcripts |
-| `grove-git` | Détection du dépôt et lecture de `HEAD` (`gix`), surveillance de `HEAD` (`notify`) |
+| `grove-git` | Détection du dépôt et lecture de `HEAD` (`gix`), surveillance de `HEAD` (`notify`), branches, worktrees et diff (CLI `git`) |
 | `grove-github` | Jeton (saisi ou `gh auth token`), pull requests ouvertes via l'API GraphQL |
 | `grove-app` | Binaire `grove` (GPUI) |
 
@@ -66,8 +67,11 @@ garde l'ancien binaire jusqu'à sa fermeture.
 | `Ctrl+Shift+N` | Nouvel espace de travail (worktree) ; `Maj+Entrée` l'ouvre avec Claude |
 | `Ctrl+Shift+M` | Onglet Claude : basculer entre le terminal (TUI officiel) et la vue native |
 | `Ctrl+Shift+P` | Pull requests GitHub (`Échap` ferme) |
+| `Ctrl+Shift+K` | Palette de commandes : toutes les actions et les espaces de travail, filtrés au fil de la frappe |
+| `Ctrl+Shift+E` | Modifications de l'espace : fichiers modifiés et leur diff (ou clic sur `●3` à côté de la branche) |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copier la sélection / coller |
 | `Shift+PageUp/PageDown` | Défiler dans le scrollback |
+| `Ctrl+Shift+F` | Chercher dans le scrollback du terminal |
 | `Ctrl+,` | Paramètres (`Échap` les ferme) |
 
 La liste complète, avec recherche, est dans Paramètres › Raccourcis clavier
@@ -87,6 +91,18 @@ Sélection dans le terminal : glisser, double-clic (mot), triple-clic (ligne).
 Elle devient la sélection primaire, collée par un clic milieu. Quand le
 programme capte la souris (vim, htop, certains TUI), `Shift` garde la
 sélection pour Grove.
+
+Recherche dans le scrollback (`Ctrl+Shift+F`, préremplie avec la sélection
+si elle tient sur une ligne) : texte littéral, casse ignorée tant qu'il n'a pas
+de majuscule. Elle part du bas de l'écran ; `Entrée` ou `↑` remonte vers les
+plus anciennes, `Maj+Entrée` ou `↓` redescend, en boucle. La correspondance en
+cours est sélectionnée (`Ctrl+Shift+C` la copie), les autres visibles sont
+surlignées ; `Échap` ferme.
+
+Vue diff (`Ctrl+Shift+E`) : les fichiers modifiés de l'espace par rapport à
+`HEAD` (indexés, non indexés, non suivis, conflits), avec les lignes ajoutées et
+supprimées, et le diff du fichier choisi (`↑`/`↓` pour changer de fichier). Elle
+se relit quand l'état git change (au plus toutes les 15 s) ou avec le bouton.
 
 Liens du terminal (URL du texte et hyperliens OSC 8, schémas `http(s)`,
 `file`, `mailto`, `ftp`, `ssh`, `git`) : soulignés au survol avec `Ctrl`,
@@ -214,6 +230,22 @@ stream-json`, lancé par le shell interactif comme en mode terminal :
   Si Grove ne répond pas, la demande est refusée.
 
 `RUST_LOG=grove=debug` affiche les événements reçus.
+
+### Usage par jour et par projet
+
+Palette (« Usage Claude ») ou lien sous la carte d'usage de la sidebar : coût et
+tokens par jour, par projet et par modèle, sur 7, 30 ou 90 jours, pour le projet
+actif ou tous. Lu dans les transcripts (`~/.claude/projects`, sous-agents
+compris) : chaque réponse de l'API y donne ses tokens, rangée par jour local et
+par projet de Grove selon son dossier (racine, worktrees) ; les autres dossiers
+apparaissent sous leur chemin. Relecture incrémentale : seules les lignes
+ajoutées sont relues.
+
+Le coût est **estimé** au tarif public de l'API (entrée, sortie, écriture du
+cache à 1,25× ou 2× l'entrée selon sa durée, lecture du cache) : avec un
+abonnement claude.ai, ce n'est pas ce qui est facturé. Comparé au coût de session
+que Claude Code enregistre (`cost-state`), l'écart constaté est de quelques %.
+Un modèle sans tarif connu est compté en tokens seulement, et signalé.
 
 ## Pull requests GitHub
 
