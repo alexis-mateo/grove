@@ -47,6 +47,23 @@ associé à la fenêtre par son `app_id`) dans `~/.local/share`. Pour mettre à 
 `git pull` puis relancer le script, puis redémarrer Grove ; une instance ouverte
 garde l'ancien binaire jusqu'à sa fermeture.
 
+## Distribuer
+
+```
+./scripts/package.sh               # → dist/grove-<version>-x86_64-linux.tar.gz
+```
+
+L'archive contient le binaire, le lanceur, l'icône et `install.sh`, qui
+l'installe sans compiler (ni Rust ni dépôt requis) :
+
+```
+tar xf grove-*.tar.gz && ./grove/install.sh    # même commande pour mettre à jour
+./grove/install.sh --uninstall
+```
+
+Le binaire exige au moins la glibc de la machine qui l'a compilé (affichée par
+le script) et un pilote Vulkan (`mesa-vulkan-drivers`).
+
 ## Raccourcis
 
 | Touche | Action |
