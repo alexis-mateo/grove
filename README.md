@@ -283,7 +283,7 @@ ajoutés pour les commentaires.
 
 ```toml
 [github.review]
-prompt = "/morty:review"
+prompt = "/review"              # un skill, ou un prompt libre
 refresh_prompt = "L'auteur a répondu ou poussé de nouveaux commits, mets la review à jour."
 
 [github.address]

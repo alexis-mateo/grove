@@ -695,7 +695,7 @@ mod tests {
             "Analyse les commentaires.\n\nPR : https://github.com/o/app/pull/12\n\n\
              Prends en compte ces commentaires de review non résolus :\n\n- a.rs:1 (@rev) : Typo"
         );
-        assert_eq!(with_url(" /morty:review ", &pr.url), "/morty:review https://github.com/o/app/pull/12");
+        assert_eq!(with_url(" /review ", &pr.url), "/review https://github.com/o/app/pull/12");
     }
 
     #[test]

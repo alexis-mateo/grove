@@ -25,7 +25,7 @@ pub struct GitHubConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReviewConfig {
-    /// Pour reviewer une PR : un skill (`/morty:review`), lancé avec l'URL de
+    /// Pour reviewer une PR : un skill (`/review`), lancé avec l'URL de
     /// la PR en argument, ou un prompt libre, suivi de l'URL.
     #[serde(alias = "skill")]
     pub prompt: String,
@@ -36,7 +36,7 @@ pub struct ReviewConfig {
 impl Default for ReviewConfig {
     fn default() -> Self {
         Self {
-            prompt: "/morty:review".into(),
+            prompt: "Fais la review de cette pull request : lis sa description et son diff, puis signale les bugs, les risques et ce qui manque (tests, documentation), avec fichier:ligne. Ne poste rien sur GitHub sans mon accord.".into(),
             refresh_prompt: "L'auteur a répondu ou poussé de nouveaux commits, mets la review à jour.".into(),
         }
     }
@@ -165,6 +165,6 @@ mod tests {
         // `skill`, l'ancien nom, est encore lu.
         let config: Config = toml::from_str("[github.address]\nskill = \"/fix\"\n").unwrap();
         assert_eq!(config.github.address.prompt, "/fix");
-        assert_eq!(config.github.review.prompt, "/morty:review");
+        assert!(config.github.review.prompt.starts_with("Fais la review"));
     }
 }

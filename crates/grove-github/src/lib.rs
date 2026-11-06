@@ -32,13 +32,13 @@ mod tests {
     #[test]
     fn parses_github_remotes() {
         for url in [
-            "git@github.com:rgsystemes/kb.git",
-            "https://github.com/rgsystemes/kb",
-            "https://github.com/rgsystemes/kb.git/",
-            "ssh://git@github.com/rgsystemes/kb.git",
-            "git@github-pro:rgsystemes/kb.git",
+            "git@github.com:octo/app.git",
+            "https://github.com/octo/app",
+            "https://github.com/octo/app.git/",
+            "ssh://git@github.com/octo/app.git",
+            "git@github-pro:octo/app.git",
         ] {
-            assert_eq!(repo_from_remote(url).as_deref(), Some("rgsystemes/kb"), "{url}");
+            assert_eq!(repo_from_remote(url).as_deref(), Some("octo/app"), "{url}");
         }
         assert_eq!(repo_from_remote("git@gitlab.com:a/b.git"), None);
         assert_eq!(repo_from_remote("https://github.com/a"), None);

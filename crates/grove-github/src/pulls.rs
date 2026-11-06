@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn review_summaries_count_as_comments() {
-        // Une review « Comment » sans fil en ligne (rgsystemes/mimicus#106).
+        // Une review « Comment » sans fil en ligne, ni autre commentaire.
         let reviews = json!([
             { "author": { "login": "rev" }, "state": "COMMENTED", "submittedAt": "2026-10-27T10:00:00Z", "body": " À revoir\n" },
             { "author": { "login": "vide" }, "state": "COMMENTED", "submittedAt": "2026-10-27T10:00:00Z", "body": "" },

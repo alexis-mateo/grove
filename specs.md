@@ -206,7 +206,7 @@ enum ClaudeStatus {
 ### Rendu attendu de la sidebar
 
 ```
-▾ rgsupv-dashboard
+▾ mon-app
     ⌂ main                            2
     ⎇ feat-1234-tree         ● attend
     ✳ fix-987-login          ● en cours
@@ -622,11 +622,11 @@ Deux listes, dans un panneau « Pull requests » (filtrées par projet, ou globa
 
 ```toml
 [github.review]
-skill = "/morty:review"          # skill lancé pour reviewer une PR ({{pr_url}} ajoutée en argument)
+skill = "/review"                # skill lancé pour reviewer une PR ({{pr_url}} ajoutée en argument)
 refresh_prompt = "L'auteur a répondu ou poussé de nouveaux commits, mets la review à jour."
 
 [github.address]
-skill = "/morty:implement"       # skill lancé pour traiter les commentaires reçus
+skill = "/address-comments"      # skill lancé pour traiter les commentaires reçus
 ```
 
 - Détection des changements : polling léger (ETag) des PR suivies, notification « nouvelles réponses sur la PR #123 ».
@@ -658,7 +658,7 @@ Faire tester une story par Claude en suivant la **procédure de test** écrite d
 
 ```toml
 [github.test]
-skill = "/morty:qa"                                   # {{issue_url}} ajoutée en argument
+skill = "/qa"                                         # {{issue_url}} ajoutée en argument
 sections = ["Procédure de test", "Comment tester", "Test plan"]
 
 [test]                                                # .grove.toml

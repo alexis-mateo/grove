@@ -1019,9 +1019,9 @@ impl GroveView {
             ))
             .child(setting_row(
                 "Review",
-                "Envoyé par « Reviewer ». Un skill (/morty:review) reçoit l'URL de la PR en argument ; \
+                "Envoyé par « Reviewer ». Un skill (/review) reçoit l'URL de la PR en argument ; \
                  un prompt libre est suivi de l'URL. Par projet : [github.review] prompt dans .grove.toml.",
-                self.render_field(FieldId::ReviewPrompt, "/morty:review", px(320.0), cx),
+                self.render_field(FieldId::ReviewPrompt, "/review, ou un prompt libre", px(320.0), cx),
             ))
             .child(setting_row(
                 "Commentaires reçus",

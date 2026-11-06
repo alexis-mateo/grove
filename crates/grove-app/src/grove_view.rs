@@ -1067,9 +1067,9 @@ mod tests {
 
     #[test]
     fn strips_claude_status_glyph() {
-        assert_eq!(strip_status_glyph("◑ Story kb#12995"), "Story kb#12995");
+        assert_eq!(strip_status_glyph("◑ Story #1234"), "Story #1234");
         assert_eq!(strip_status_glyph("✳ Claude Code"), "Claude Code");
-        assert_eq!(strip_status_glyph("Story kb#12995"), "Story kb#12995");
+        assert_eq!(strip_status_glyph("Story #1234"), "Story #1234");
         assert_eq!(strip_status_glyph("é dans le titre"), "é dans le titre");
         assert_eq!(strip_status_glyph("- liste"), "- liste");
     }
