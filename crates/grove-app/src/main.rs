@@ -12,6 +12,7 @@ mod markdown;
 mod marquee;
 mod mouse;
 mod native_view;
+mod nav_history;
 mod palette;
 mod panes;
 mod profiles;

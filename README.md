@@ -97,6 +97,10 @@ enregistrés.
 
 Clic milieu sur un onglet : le fermer.
 
+Boutons précédent / suivant de la souris : onglet visité avant ou après, comme
+dans un navigateur, d'un espace de travail à l'autre. Les onglets fermés depuis
+sont sautés ; aller sur un nouvel onglet oublie les « suivants ».
+
 Volets (splits) : un onglet peut être partagé en plusieurs terminaux, côte à
 côte ou empilés, à volonté. Le nouveau volet lance le même profil que celui
 qu'on partage (le profil par défaut à côté d'une session Claude). Le volet

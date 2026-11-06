@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, Context, DragMoveEvent, Entity, EntityInputHandler, FocusHandle, Focusable, KeyDownEvent,
-    PathPromptOptions, Pixels, Point, SharedString, Task, UTF16Selection, Window, actions, div, prelude::*, px,
+    MouseButton, NavigationDirection, PathPromptOptions, Pixels, Point, SharedString, Task, UTF16Selection, Window, actions, div, prelude::*, px,
 };
 use grove_claude::ClaudeStatus;
 use grove_core::{ClaudeView, Config, Paths, ProjectId, State, TabId, TabKind, WorkspaceId, WorkspaceKind};
@@ -19,6 +19,7 @@ use crate::worktrees::{DialogMode, Notice, RemoveDialog, WorktreeDialog};
 use crate::claude::ClaudeRuntime;
 use crate::github::GitHub;
 use crate::native_view::{NativeView, NativeViewEvent};
+use crate::nav_history::NavHistory;
 use crate::profiles::{Offline, ProfileCatalog, ProfilePicker};
 use crate::settings::{ConfigWatch, Settings};
 use crate::sidebar::{DEFAULT_SIDEBAR_WIDTH, DraggedSidebar};
@@ -175,6 +176,8 @@ pub struct GroveView {
     /// Worktrees de chaque projet, pour importer ceux créés hors de Grove.
     pub(crate) worktree_watchers: HashMap<ProjectId, WorktreesWatcher>,
     pub(crate) worktree_events: smol::channel::Sender<ProjectId>,
+    /// Onglets visités, pour les boutons précédent / suivant de la souris.
+    nav: NavHistory<TabId>,
     focus_handle: FocusHandle,
     git_events: smol::channel::Sender<(WorkspaceId, Head)>,
     _git_tasks: [Task<()>; 3],
@@ -285,6 +288,7 @@ impl GroveView {
             rename: None,
             worktree_watchers: HashMap::new(),
             worktree_events,
+            nav: NavHistory::default(),
             focus_handle: cx.focus_handle(),
             git_events,
             _git_tasks: [git_task, git_poll, worktree_task],
@@ -765,6 +769,23 @@ impl GroveView {
         self.activate_tab(key, next, window, cx);
     }
 
+    /// Boutons précédent / suivant de la souris : onglet visité avant ou après,
+    /// tous espaces confondus. Les onglets fermés depuis sont sautés.
+    fn navigate(&mut self, direction: NavigationDirection, window: &mut Window, cx: &mut Context<Self>) {
+        let state = &self.state;
+        let exists = |tab| state.projects.iter().flat_map(|p| &p.workspaces).any(|w| w.tabs.iter().any(|t| t.id == tab));
+        let target = match direction {
+            NavigationDirection::Back => self.nav.back(exists),
+            NavigationDirection::Forward => self.nav.forward(exists),
+        };
+        if let Some(tab) = target
+            && let Some(key) = self.locate_tab(tab)
+        {
+            self.claude.history = None;
+            self.activate_tab(key, tab, window, cx);
+        }
+    }
+
     fn move_active_tab(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some((key, tab)) = self.active_tab() else { return };
         let tabs = &self.state.workspace(key).expect("espace actif").tabs;
@@ -862,6 +883,9 @@ impl Focusable for GroveView {
 impl Render for GroveView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_tab();
+        // Toute arrivée sur un onglet (clic, raccourci, ouverture, fermeture d'un autre)
+        // passe par ici : l'historique la voit sans qu'on la note partout.
+        self.nav.visit(active.map(|(_, tab)| tab));
         let panes = active.and_then(|(key, tab)| self.render_panes(key, tab, window, cx));
         let native = active.is_some_and(|(_, tab)| self.natives.contains_key(&tab));
 
@@ -993,6 +1017,14 @@ impl Render for GroveView {
                 this.claude.panel_visible = !this.claude.panel_visible;
                 cx.notify();
             }))
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.navigate(NavigationDirection::Back, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.navigate(NavigationDirection::Forward, window, cx)),
+            )
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedSidebar>, _, cx| this.resize_sidebar(event, cx)))
             // Avant les panneaux flottants, qui le relèvent s'ils se ferment sur ce clic.
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.popover_dismissed = false))
