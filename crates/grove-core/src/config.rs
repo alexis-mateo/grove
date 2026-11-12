@@ -109,6 +109,10 @@ pub struct TerminalConfig {
     /// Profil des nouveaux onglets (`Ctrl+Shift+T`, `+`). Par défaut : le shell.
     pub default_profile: Option<String>,
     pub profiles: Vec<crate::Profile>,
+    /// Commande qui ouvre un fichier cliqué dans un terminal (`Ctrl+clic`), lancée
+    /// par `sh -c` : `{path}`, `{line}`, `{column}` y sont remplacés. Exemple :
+    /// `code -g {path}:{line}:{column}`. Par défaut : l'application du système.
+    pub open_files_with: Option<String>,
 }
 
 impl Default for TerminalConfig {
@@ -118,7 +122,30 @@ impl Default for TerminalConfig {
             scrollback: 10_000,
             default_profile: None,
             profiles: Vec::new(),
+            open_files_with: None,
         }
+    }
+}
+
+impl TerminalConfig {
+    /// Commande `sh -c` qui ouvre `path`, ou `None` sans [`TerminalConfig::open_files_with`].
+    /// Sans ligne (ou colonne), `:{line}` (`:{column}`) est retiré ; ailleurs, il vaut 1.
+    pub fn open_file_command(&self, path: &Path, line: Option<u32>, column: Option<u32>) -> Option<String> {
+        let template = self.open_files_with.as_deref().map(str::trim).filter(|t| !t.is_empty())?;
+        let mut command = template.to_owned();
+        if column.is_none() || line.is_none() {
+            command = command.replace(":{column}", "");
+        }
+        if line.is_none() {
+            command = command.replace(":{line}", "");
+        }
+        let quoted = format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"));
+        Some(
+            command
+                .replace("{path}", &quoted)
+                .replace("{line}", &line.unwrap_or(1).to_string())
+                .replace("{column}", &column.unwrap_or(1).to_string()),
+        )
     }
 }
 
@@ -144,6 +171,23 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_file_command() {
+        let mut terminal = TerminalConfig::default();
+        let path = Path::new("/tmp/l'été.rs");
+        assert_eq!(terminal.open_file_command(path, Some(3), None), None);
+
+        terminal.open_files_with = Some("code -g {path}:{line}:{column}".into());
+        assert_eq!(terminal.open_file_command(path, Some(3), Some(7)).unwrap(), r"code -g '/tmp/l'\''été.rs':3:7");
+        assert_eq!(terminal.open_file_command(path, Some(3), None).unwrap(), r"code -g '/tmp/l'\''été.rs':3");
+        assert_eq!(terminal.open_file_command(path, None, None).unwrap(), r"code -g '/tmp/l'\''été.rs'");
+
+        terminal.open_files_with = Some("vim +{line} {path}".into());
+        assert_eq!(terminal.open_file_command(Path::new("/a"), None, None).unwrap(), "vim +1 '/a'");
+        terminal.open_files_with = Some("  ".into());
+        assert_eq!(terminal.open_file_command(path, None, None), None);
+    }
 
     #[test]
     fn missing_file_gives_defaults() {

@@ -86,6 +86,16 @@ pub struct Exited(pub Option<i32>);
 
 impl gpui::EventEmitter<Exited> for TerminalView {}
 
+/// `Ctrl+clic` sur un chemin existant : Grove l'ouvre selon la configuration
+/// (`terminal.open_files_with`), qu'il est seul à suivre.
+pub struct OpenFile {
+    pub path: std::path::PathBuf,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+}
+
+impl gpui::EventEmitter<OpenFile> for TerminalView {}
+
 impl TerminalView {
     /// Lance le programme décrit par `options` et crée la vue. Échoue si le PTY ne peut pas être créé.
     pub fn spawn(options: TerminalOptions, config: &Config, cx: &mut App) -> Result<Entity<Self>> {
@@ -422,7 +432,10 @@ impl TerminalView {
         if event.button == MouseButton::Left && event.modifiers.control {
             let (column, row) = self.cell_at(event.position);
             if let Some(link) = self.terminal.link_at(row, column) {
-                cx.open_url(&link.uri);
+                match link.path {
+                    Some(path) => cx.emit(OpenFile { path, line: link.line, column: link.column }),
+                    None => cx.open_url(&link.uri),
+                }
                 self.link_click = true;
                 cx.stop_propagation();
                 return;

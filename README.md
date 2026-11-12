@@ -127,7 +127,18 @@ se relit quand l'état git change (au plus toutes les 15 s) ou avec le bouton.
 
 Liens du terminal (URL du texte et hyperliens OSC 8, schémas `http(s)`,
 `file`, `mailto`, `ftp`, `ssh`, `git`) : soulignés au survol avec `Ctrl`,
-ouverts par `Ctrl+clic` ; l'adresse s'affiche en bas à gauche.
+ouverts par `Ctrl+clic` ; l'adresse s'affiche en bas à gauche. Les chemins de
+fichiers ou de dossiers existants aussi (absolus, sous `~/`, ou relatifs au
+dossier de l'espace de travail, avec ou sans `:ligne` ou `:ligne:colonne`) :
+les dossiers avec l'application du système, les fichiers aussi, sauf si une
+commande est réglée (Paramètres › Terminal, ou dans `config.toml`) :
+
+```toml
+[terminal]
+open_files_with = "code -g {path}:{line}:{column}"   # lancé par sh -c ; sans ligne, « :{line} » est retiré
+```
+
+Si la commande échoue (éditeur absent…), Grove se rabat sur l'application du système.
 
 Lettres accentuées et touches mortes (`^` puis `e`…) : le texte composé par la
 méthode de saisie (IBus, XIM, compose) arrive dans le terminal, la vue native

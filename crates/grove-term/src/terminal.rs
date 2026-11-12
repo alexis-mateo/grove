@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 
 use crate::colors::Palette;
 use crate::graphics::{self, Graphics, Image, Placeholder};
-use crate::links::{self, Link};
+use crate::links::{Link, LinkFinder};
 use crate::progress::Progress;
 use crate::pty::GraphicsPty;
 
@@ -93,8 +93,7 @@ pub struct Terminal {
     sender: EventLoopSender,
     window_size: Arc<Mutex<WindowSize>>,
     palette: Palette,
-    /// Compilée une fois : la construction des automates coûte plus que la recherche.
-    url_regex: Mutex<RegexSearch>,
+    links: Mutex<LinkFinder>,
     /// Images du protocole graphique de kitty, reçues par le thread d'E/S.
     graphics: Arc<Mutex<Graphics>>,
     /// Recherche dans le scrollback en cours. Toujours verrouillée après `term`.
@@ -111,12 +110,14 @@ impl Terminal {
         env.entry("COLORTERM".into()).or_insert_with(|| "truecolor".into());
         let pty_options = tty::Options {
             shell: Some(tty::Shell::new(options.program, options.args)),
-            working_directory: options.cwd,
+            working_directory: options.cwd.clone(),
             drain_on_exit: true,
             env,
         };
 
         let size = Size { columns: options.columns.max(1), lines: options.lines.max(1) };
+        // Chemins relatifs : contre le dossier de lancement (celui de l'espace de travail).
+        let links = LinkFinder::new(options.cwd);
         let pty = tty::new(&pty_options, size.window_size(), 0).context("création du PTY")?;
 
         let listener = Listener {
@@ -141,7 +142,7 @@ impl Terminal {
             sender,
             window_size: listener.window_size,
             palette: Palette::default(),
-            url_regex: Mutex::new(links::url_regex()),
+            links: Mutex::new(links),
             graphics,
             search: Mutex::new(None),
         })
@@ -206,7 +207,7 @@ impl Terminal {
         }
         let offset = term.grid().display_offset() as i32;
         let point = Point::new(Line(row as i32 - offset), Column(column));
-        links::link_at(&term, &mut self.url_regex.lock().unwrap(), point)
+        self.links.lock().unwrap().link_at(&term, point)
     }
 
     /// Commence une sélection à la cellule visible (`row`, `column`) ; `right` :
@@ -629,6 +630,32 @@ mod tests {
         assert_eq!(hyperlink.uri, "https://example.com/x");
         assert_eq!((hyperlink.start, hyperlink.end), ((1, 0), (1, 3)));
         assert_eq!(terminal.link_at(1, 5), None);
+    }
+
+    #[test]
+    fn detects_file_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
+        let absolute = dir.path().join("src/main.rs");
+        let mut options = TerminalOptions::new("/bin/sh");
+        options.cwd = Some(dir.path().to_owned());
+        options.args = vec![
+            "-c".into(),
+            format!("printf '│ Read(src/main.rs:12) et/ou\\n{}.\\n'; sleep 5", absolute.display()),
+        ];
+        let terminal = Terminal::spawn(options, |_| {}).unwrap();
+        wait_for(&terminal, |s| s.line_text(1).contains("main.rs"));
+
+        let link = terminal.link_at(0, 10).expect("chemin relatif détecté");
+        assert_eq!(link.uri, "src/main.rs:12");
+        assert_eq!(link.path, Some(dir.path().join("src/main.rs")));
+        assert_eq!((link.start, link.end), ((0, 7), (0, 20)));
+        assert_eq!(terminal.link_at(0, 24), None, "chemin inexistant");
+
+        let link = terminal.link_at(1, 3).expect("chemin absolu détecté");
+        assert_eq!(link.path, Some(absolute.clone()));
+        assert_eq!(link.uri, absolute.display().to_string(), "le point final n'en fait pas partie");
     }
 
     #[test]

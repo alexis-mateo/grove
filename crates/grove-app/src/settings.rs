@@ -44,6 +44,7 @@ pub(crate) enum FieldId {
     FontSize,
     Shell,
     Scrollback,
+    OpenFilesWith,
     ClaudeCommand,
     GitHubToken,
     ReviewPrompt,
@@ -240,6 +241,7 @@ impl GroveView {
             FieldId::FontSize => format!("{}", config.font.size),
             FieldId::Shell => config.terminal.shell.clone().unwrap_or_default(),
             FieldId::Scrollback => config.terminal.scrollback.to_string(),
+            FieldId::OpenFilesWith => config.terminal.open_files_with.clone().unwrap_or_default(),
             FieldId::ClaudeCommand => config.claude.command.clone(),
             // Jamais réaffiché : la saisie part d'un champ vide.
             FieldId::GitHubToken => String::new(),
@@ -309,6 +311,13 @@ impl GroveView {
                 }
                 _ => Err(anyhow::anyhow!("scrollback invalide : « {text} » (de 0 à 1 000 000 lignes)")),
             },
+            FieldId::OpenFilesWith => self.write_config(cx, |file| {
+                match opt(&text) {
+                    Some(command) => file.set(&["terminal", "open_files_with"], command),
+                    None => file.remove(&["terminal", "open_files_with"]),
+                }
+                Ok(())
+            }),
             FieldId::ClaudeCommand => self.write_config(cx, |file| {
                 match opt(&text) {
                     Some(command) => file.set(&["claude", "command"], command),
@@ -910,6 +919,11 @@ impl GroveView {
                 "Scrollback",
                 "Lignes gardées en mémoire par terminal (prochains onglets).",
                 self.render_field(FieldId::Scrollback, "10000", px(120.0), cx),
+            ))
+            .child(setting_row(
+                "Ouvrir les fichiers avec",
+                "Commande lancée par Ctrl+clic sur un chemin ; {path}, {line} et {column} y sont remplacés. Vide : application du système.",
+                self.render_field(FieldId::OpenFilesWith, "code -g {path}:{line}:{column}", px(260.0), cx),
             ))
             .child(setting_row("Profil par défaut", "Ouvert par Ctrl+Shift+T et le bouton +.", select))
             .into_any_element()

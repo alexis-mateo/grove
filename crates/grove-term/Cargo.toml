@@ -12,3 +12,6 @@ flate2.workspace = true
 image.workspace = true
 log.workspace = true
 polling.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

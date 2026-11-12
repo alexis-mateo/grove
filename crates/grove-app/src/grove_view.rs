@@ -654,9 +654,34 @@ impl GroveView {
             }
         })
         .detach();
+        cx.subscribe(&terminal, |this, _, file: &crate::terminal_view::OpenFile, cx| this.open_file(file, cx)).detach();
         cx.observe(&terminal, |_, _, cx| cx.notify()).detach();
         self.terminals.insert(tab, terminal.clone());
         Some(terminal)
+    }
+
+    /// Fichier cliqué dans un terminal : la commande `terminal.open_files_with`,
+    /// sinon (ou si elle échoue, ou pour un dossier) l'application du système.
+    fn open_file(&mut self, file: &crate::terminal_view::OpenFile, cx: &mut Context<Self>) {
+        let path = file.path.clone();
+        let command = self.config.terminal.open_file_command(&path, file.line, file.column);
+        let Some(command) = command.filter(|_| path.is_file()) else {
+            return cx.open_with_system(&path);
+        };
+        cx.spawn(async move |_, cx| {
+            let run = cx.background_executor().spawn({
+                let command = command.clone();
+                async move { std::process::Command::new("sh").arg("-c").arg(command).status() }
+            });
+            let failure = match run.await {
+                Ok(status) if status.success() => return,
+                Ok(status) => status.to_string(),
+                Err(err) => err.to_string(),
+            };
+            log::warn!("ouverture de fichier « {command} » : {failure} ; application du système à la place");
+            let _ = cx.update(|cx| cx.open_with_system(&path));
+        })
+        .detach();
     }
 
     /// Vue native d'un onglet Claude, lancée à la première demande.
