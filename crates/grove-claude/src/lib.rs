@@ -12,6 +12,7 @@ mod client;
 mod native;
 mod permission;
 mod protocol;
+mod schedule;
 mod server;
 mod session;
 mod settings;
@@ -24,6 +25,7 @@ pub use client::{run_hook, run_statusline};
 pub use native::{NativeEvent, NativeOptions, NativeProcess, PermissionPrompt};
 pub use protocol::{ENV_SOCKET, ENV_TAB_ID, ENV_USER_STATUSLINE, Message, MessageKind, socket_path};
 pub use permission::{decision as permission_decision, mcp_config, permission_tool, run_mcp_server};
+pub use schedule::{Schedule, ScheduleKind, ScheduledTask};
 pub use server::{EventServer, Reply};
 pub use session::{
     ClaudeStatus, NeedsInputReason, RateLimits, RateWindow, Session, SessionMetrics, Transition,

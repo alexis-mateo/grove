@@ -372,6 +372,18 @@ impl TerminalView {
         self.terminal.paste(text);
     }
 
+    /// Saisit `text` puis valide, comme au clavier. L'Entrée part à part : collée
+    /// avec le texte, Claude Code la prendrait pour un retour à la ligne.
+    pub(crate) fn submit(&self, text: &str, cx: &mut Context<Self>) {
+        self.paste(text);
+        let terminal = self.terminal.clone();
+        cx.spawn(async move |_, _| {
+            gpui::Timer::after(std::time::Duration::from_millis(150)).await;
+            terminal.write(b"\r".as_slice());
+        })
+        .detach();
+    }
+
     /// Le programme a demandé les événements souris. Shift les garde pour Grove.
     fn reports_mouse(&self, modifiers: &Modifiers) -> bool {
         self.terminal.mode().intersects(TermMode::MOUSE_MODE) && !modifiers.shift

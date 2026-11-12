@@ -19,7 +19,7 @@ use crate::grove_view::{GroveView, WorkspaceKey};
 use crate::usage::{self, Usage};
 use crate::marquee::marquee;
 use crate::theme;
-use crate::ui::{Icon, hint, icon};
+use crate::ui::{Icon, hint, icon, icon_button, tooltip};
 
 pub(crate) struct ClaudeRuntime {
     /// `None` si le socket n'a pas pu être ouvert : les onglets Claude
@@ -85,12 +85,14 @@ impl ClaudeRuntime {
             }
         });
 
-        // Rafraîchit les comptes à rebours des limites d'usage.
+        // Rafraîchit les comptes à rebours (limites d'usage, tâches planifiées).
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 gpui::Timer::after(std::time::Duration::from_secs(30)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.claude.usage.limits.is_some() {
+                    // Comptes à rebours des limites et des tâches planifiées.
+                    let scheduled = this.claude.sessions.values().any(|s| !s.schedule.is_empty());
+                    if this.claude.usage.limits.is_some() || scheduled {
                         cx.notify();
                     }
                 });
@@ -477,7 +479,7 @@ impl GroveView {
     }
 
     /// Panneau de la session Claude active : modèle, coût, contexte, outil en cours.
-    pub(crate) fn render_session_panel(&self, tab: TabId) -> Option<gpui::AnyElement> {
+    pub(crate) fn render_session_panel(&self, tab: TabId, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if !self.claude.panel_visible {
             return None;
         }
@@ -580,10 +582,97 @@ impl GroveView {
                         )),
                 )
                 .children(gauge.map(|gauge| section().child(gauge)))
+                .children(scheduled_tasks(tab, session, cx).map(|tasks| section().child(tasks)))
                 .into_any_element(),
         )
     }
 }
+
+/// Crons et réveils `/loop` de la session, le plus proche d'abord. `None` s'il n'y en a pas.
+fn scheduled_tasks(tab: TabId, session: &Session, cx: &mut Context<GroveView>) -> Option<impl IntoElement> {
+    let now = jiff::Timestamp::now().as_second();
+    let tasks = session.schedule.active(now);
+    if tasks.is_empty() {
+        return None;
+    }
+    let header = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(icon(Icon::Clock, theme::text_faint()))
+        .child(div().flex_1().text_xs().text_color(theme::text_faint()).child("Planifiées"))
+        .child(div().text_xs().text_color(theme::text_faint()).child(tasks.len().to_string()));
+
+    Some(div().flex().flex_col().gap_2p5().child(header).children(tasks.into_iter().map(|task| {
+        let group = SharedString::from(format!("scheduled-{}", task.id));
+        let when = match task.next_run(now) {
+            _ if task.cancelling => "annulation…".to_owned(),
+            Some((at, approx)) => format!("{}{}", if approx { "≈ " } else { "" }, next_run_label(at, now)),
+            // Heure passée : la tâche part dès que la session est inactive.
+            None => "en attente".to_owned(),
+        };
+        let cancel = (!task.cancelling).then(|| {
+            let (id, prompt) = (task.id.clone(), task.cancel_prompt());
+            icon_button(format!("cancel-{}", task.id), Icon::X)
+                .size(px(18.0))
+                .invisible()
+                .group_hover(group.clone(), |s| s.visible())
+                .tooltip(tooltip("Demander à Claude d'annuler"))
+                .on_click(cx.listener(move |this, _, _, cx| this.cancel_scheduled(tab, &id, &prompt, cx)))
+        });
+        div()
+            .id(group.clone())
+            .group(group.clone())
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().flex_1().min_w_0().flex().text_color(theme::text_faint()).child(task.describe()))
+                    .child(div().flex_none().text_color(theme::accent()).child(when))
+                    .children(cancel),
+            )
+            .child(
+                div()
+                    .flex()
+                    .text_color(if task.cancelling { theme::text_faint() } else { theme::text() })
+                    .child(marquee(SharedString::from(format!("scheduled-prompt-{}", task.id)), one_line(task.summary()))),
+            )
+    })))
+}
+
+impl GroveView {
+    /// Grove n'a pas la main sur la mémoire de `claude` : il lui demande
+    /// d'annuler, dans l'onglet de la session, et affiche « annulation… »
+    /// jusqu'au hook de `CronDelete` (ou la fin du tour).
+    fn cancel_scheduled(&mut self, tab: TabId, id: &str, prompt: &str, cx: &mut Context<Self>) {
+        let Some(terminal) = self.terminals.get(&tab) else { return };
+        let marked = self.claude.sessions.get_mut(&tab).is_some_and(|s| s.schedule.mark_cancelling(id));
+        if marked {
+            terminal.update(cx, |terminal, cx| terminal.submit(prompt, cx));
+            cx.notify();
+        }
+    }
+}
+
+/// « dans 12 min », « à 14:07 », « demain à 09:03 ».
+fn next_run_label(at: i64, now: i64) -> String {
+    let delta = at - now;
+    if delta < 3600 {
+        return format!("dans {} min", (delta / 60).max(1));
+    }
+    let label = usage::reset_date(at);
+    label.strip_prefix("aujourd'hui ").map(str::to_owned).unwrap_or(label)
+}
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 
 /// Interroge l'API d'usage au démarrage puis toutes les 3 min (opt-in, specs §8.5).
 /// Pas d'appel tant que la statusline fournit des limites récentes : ccstatusline

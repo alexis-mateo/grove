@@ -932,7 +932,7 @@ impl Render for GroveView {
                             .flex()
                             .child(div().flex_1().min_w_0().h_full().child(panes))
                             // En vue native, le pied de la saisie donne déjà modèle, coût et contexte.
-                            .children(active.filter(|_| !native).and_then(|(_, tab)| self.render_session_panel(tab)))
+                            .children(active.filter(|_| !native).and_then(|(_, tab)| self.render_session_panel(tab, cx)))
                             .into_any_element(),
                         (None, None) => placeholder(self.state.projects.is_empty()).into_any_element(),
                     })

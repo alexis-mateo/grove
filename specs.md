@@ -349,6 +349,7 @@ Correspondance événement → état :
 - Badge d'état par onglet et par espace de travail dans la sidebar (agrégé : « 1 session attend »).
 - Notifications système (crate `notify-rust`) avec action « aller à l'onglet ».
 - Panneau latéral de session : modèle et **niveau d'effort**, coût cumulé, jauge de contexte, outil en cours, lignes ajoutées et supprimées.
+- Section **Planifiées** du panneau de session : crons de session (`CronCreate`, `/loop 5m …`) et réveils `/loop` (`ScheduleWakeup`), avec fréquence, prompt et prochain passage. Claude Code les garde en mémoire sans fichier : Grove les reconstitue depuis `PostToolUse` (entrée et réponse de l'outil), retire celles annulées (`CronDelete`, `stop`), passées (tâche unique), expirées (7 jours) ou perdues avec le processus (`SessionEnd`, `SessionStart` `startup`/`resume`). Prochain passage : celui annoncé par Claude Code, puis recalculé depuis l'expression cron (« ≈ », sans le décalage propre à la tâche). Section masquée s'il n'y a aucune tâche. Le `×` au survol d'une tâche saisit dans l'onglet un prompt demandant à Claude de l'annuler (Grove n'a pas accès à la mémoire du processus) ; « annulation… » s'affiche jusqu'au hook `CronDelete`, ou jusqu'à la fin du tour si Claude ne l'a pas fait.
 - Liste des sessions passées d'un espace de travail (lues depuis les transcripts) → **reprendre** (`claude --resume <id>`).
 - Raccourci « aller à la prochaine session qui attend une réponse ».
 

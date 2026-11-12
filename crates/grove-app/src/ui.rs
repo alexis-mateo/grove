@@ -53,6 +53,7 @@ icons! {
     ChevronDown => "chevron-down",
     ChevronRight => "chevron-right",
     Claude => "claude",
+    Clock => "clock",
     Copy => "copy",
     CloudUpload => "cloud-upload",
     CornerDownRight => "corner-down-right",

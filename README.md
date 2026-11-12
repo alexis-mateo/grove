@@ -78,7 +78,7 @@ le script) et un pilote Vulkan (`mesa-vulkan-drivers`).
 | `Ctrl+Shift+B` | Afficher / masquer la sidebar |
 | `Ctrl+Shift+A` | Nouvel onglet Claude |
 | `Ctrl+Shift+J` | Aller à la prochaine session Claude qui attend une réponse |
-| `Ctrl+Shift+I` | Afficher / masquer le panneau de session |
+| `Ctrl+Shift+I` | Afficher / masquer le panneau de session (modèle, coût, contexte, tâches planifiées) |
 | `Ctrl+Shift+H` | Sessions passées de l'espace (clic = reprendre) |
 | `Ctrl+Shift+G` | Sélecteur de branches (chercher, changer, créer depuis la branche courante ou la branche principale, supprimer, déplacer le travail dans un worktree) |
 | `Ctrl+Shift+N` | Nouvel espace de travail (worktree) ; `Maj+Entrée` l'ouvre avec Claude |

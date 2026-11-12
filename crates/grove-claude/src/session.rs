@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::protocol::{Message, MessageKind};
+use crate::schedule::Schedule;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClaudeStatus {
@@ -140,18 +141,33 @@ pub struct Session {
     pub session_id: Option<String>,
     pub status: ClaudeStatus,
     pub metrics: SessionMetrics,
+    /// Crons et réveils `/loop` en cours (specs §8.3).
+    pub schedule: Schedule,
 }
 
 impl Default for Session {
     fn default() -> Self {
-        Self { session_id: None, status: ClaudeStatus::Starting, metrics: SessionMetrics::default() }
+        Self {
+            session_id: None,
+            status: ClaudeStatus::Starting,
+            metrics: SessionMetrics::default(),
+            schedule: Schedule::default(),
+        }
     }
 }
 
 impl Session {
     /// Applique un message. Renvoie une transition à notifier, le cas échéant.
     pub fn apply(&mut self, message: &Message) -> Option<Transition> {
+        self.apply_at(message, jiff::Timestamp::now().as_second())
+    }
+
+    /// Comme [`Session::apply`], à l'instant `now` (secondes Unix).
+    pub fn apply_at(&mut self, message: &Message, now: i64) -> Option<Transition> {
         let payload = &message.payload;
+        if message.kind == MessageKind::Hook {
+            self.schedule.apply_hook(payload, now);
+        }
         if let Some(id) = payload.get("session_id").and_then(Value::as_str) {
             self.session_id = Some(id.to_owned());
         }
